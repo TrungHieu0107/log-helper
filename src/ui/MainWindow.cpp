@@ -233,7 +233,9 @@ void MainWindow::renderToolbar() {
     ImGui::Spacing();
 
     float availWidth = ImGui::GetContentRegionAvail().x;
-    float labelWidth = 80.0f;
+    
+    // Calculate dynamic label width based on longest label "Output Dir:"
+    float labelWidth = ImGui::CalcTextSize("Output Dir:").x + 20.0f;
 
     // Calculate button width based on text + padding
     float browseWidth = ImGui::CalcTextSize("Browse").x + ImGui::GetStyle().FramePadding.x * 2 + 16.0f;
