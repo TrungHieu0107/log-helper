@@ -8,6 +8,7 @@ Debug/
 Release/
 MinSizeRel/
 RelWithDebInfo/
+bin/
 
 # Compiled binaries
 *.exe
@@ -72,6 +73,8 @@ $RECYCLE.BIN/
 *.swp
 *~
 
-# User config (uncomment if you want to ignore user settings)
-# *.ini
-# *.json
+# Application config (contains connection passwords)
+log_parser_config.json
+
+# HTML output files
+sql_report_*.html
