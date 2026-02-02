@@ -1,11 +1,25 @@
 #include "Theme.h"
 #include "imgui.h"
 
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
 namespace Theme {
+
+// Get DPI scale factor
+static float getDpiScale() {
+    HDC hdc = GetDC(nullptr);
+    float dpiX = static_cast<float>(GetDeviceCaps(hdc, LOGPIXELSX));
+    ReleaseDC(nullptr, hdc);
+    return dpiX / 96.0f; // 96 DPI is standard
+}
 
 void applyDarkTheme() {
     ImGuiStyle& style = ImGui::GetStyle();
     ImVec4* colors = style.Colors;
+    
+    // Get DPI scale
+    float scale = getDpiScale();
     
     // Color palette matching HTML report
     ImVec4 bg_primary(0.12f, 0.12f, 0.18f, 1.00f);      // #1e1e2e
@@ -72,7 +86,12 @@ void applyDarkTheme() {
     colors[ImGuiCol_SliderGrab] = accent_blue;
     colors[ImGuiCol_SliderGrabActive] = accent_purple;
     
-    // Style settings
+    // Resize grip
+    colors[ImGuiCol_ResizeGrip] = bg_card;
+    colors[ImGuiCol_ResizeGripHovered] = accent_blue;
+    colors[ImGuiCol_ResizeGripActive] = accent_purple;
+    
+    // Style settings - scaled for DPI
     style.WindowRounding = 8.0f;
     style.ChildRounding = 6.0f;
     style.FrameRounding = 4.0f;
@@ -81,14 +100,23 @@ void applyDarkTheme() {
     style.ScrollbarRounding = 4.0f;
     style.TabRounding = 4.0f;
     
-    style.WindowPadding = ImVec2(12, 12);
-    style.FramePadding = ImVec2(8, 4);
-    style.ItemSpacing = ImVec2(8, 6);
-    style.ItemInnerSpacing = ImVec2(6, 4);
+    // Responsive padding and spacing - scaled
+    style.WindowPadding = ImVec2(12 * scale, 12 * scale);
+    style.FramePadding = ImVec2(8 * scale, 4 * scale);
+    style.ItemSpacing = ImVec2(8 * scale, 6 * scale);
+    style.ItemInnerSpacing = ImVec2(6 * scale, 4 * scale);
+    
+    // Scrollbar size - scaled
+    style.ScrollbarSize = 14.0f * scale;
+    style.GrabMinSize = 12.0f * scale;
     
     style.WindowBorderSize = 1.0f;
     style.FrameBorderSize = 0.0f;
     style.PopupBorderSize = 1.0f;
+    
+    // Apply global scale for all sizes
+    style.ScaleAllSizes(scale);
 }
 
 } // namespace Theme
+

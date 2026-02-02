@@ -7,6 +7,9 @@
 // Forward declare message handler from imgui_impl_win32.cpp
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
+// Static pointer for WndProc access
+static Application* g_app = nullptr;
+
 Application::Application() {}
 
 Application::~Application() {
@@ -14,6 +17,8 @@ Application::~Application() {
 }
 
 bool Application::initialize(int width, int height, const char* title) {
+    g_app = this;
+    
     // Create application window
     m_wc = { 
         sizeof(m_wc), 
@@ -37,22 +42,35 @@ bool Application::initialize(int width, int height, const char* title) {
     std::wstring wideTitle(wideLen, 0);
     MultiByteToWideChar(CP_UTF8, 0, title, -1, wideTitle.data(), wideLen);
     
-    // Center window on screen
+    // Calculate initial window size (80% of screen)
     int screenWidth = GetSystemMetrics(SM_CXSCREEN);
     int screenHeight = GetSystemMetrics(SM_CYSCREEN);
-    int posX = (screenWidth - width) / 2;
-    int posY = (screenHeight - height) / 2;
+    int windowWidth = (screenWidth * 80) / 100;
+    int windowHeight = (screenHeight * 80) / 100;
+    int posX = (screenWidth - windowWidth) / 2;
+    int posY = (screenHeight - windowHeight) / 2;
+    
+    // Use provided size if valid, otherwise use calculated
+    if (width > 0 && height > 0) {
+        windowWidth = width;
+        windowHeight = height;
+        posX = (screenWidth - windowWidth) / 2;
+        posY = (screenHeight - windowHeight) / 2;
+    }
     
     m_hwnd = ::CreateWindowW(
         m_wc.lpszClassName, 
         wideTitle.c_str(),
         WS_OVERLAPPEDWINDOW, 
         posX, posY, 
-        width, height,
+        windowWidth, windowHeight,
         nullptr, nullptr, 
         m_wc.hInstance, 
         nullptr
     );
+    
+    // Save initial window style
+    m_savedWindowStyle = GetWindowLong(m_hwnd, GWL_STYLE);
     
     // Initialize Direct3D
     if (!createDeviceD3D()) {
@@ -63,8 +81,8 @@ bool Application::initialize(int width, int height, const char* title) {
         return false;
     }
     
-    // Show the window
-    ::ShowWindow(m_hwnd, SW_SHOWDEFAULT);
+    // Show the window maximized
+    ::ShowWindow(m_hwnd, SW_SHOWMAXIMIZED);
     ::UpdateWindow(m_hwnd);
     
     // Setup Dear ImGui context
@@ -72,6 +90,11 @@ bool Application::initialize(int width, int height, const char* title) {
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    
+    // Configure larger font (default is 13px, we add 2px)
+    ImFontConfig fontConfig;
+    fontConfig.SizePixels = 15.0f;  // 13 + 2 = 15px
+    io.Fonts->AddFontDefault(&fontConfig);
     
     // Disable imgui.ini file
     io.IniFilename = nullptr;
@@ -216,6 +239,53 @@ void Application::cleanupRenderTarget() {
     }
 }
 
+void Application::resizeSwapChain(UINT width, UINT height) {
+    if (m_swapChain && width > 0 && height > 0) {
+        cleanupRenderTarget();
+        m_swapChain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0);
+        createRenderTarget();
+    }
+}
+
+void Application::toggleFullscreen() {
+    if (!m_hwnd) return;
+    
+    if (!m_isFullscreen) {
+        // Save current window placement
+        GetWindowPlacement(m_hwnd, &m_savedWindowPlacement);
+        m_savedWindowStyle = GetWindowLong(m_hwnd, GWL_STYLE);
+        
+        // Remove window decorations
+        SetWindowLong(m_hwnd, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+        
+        // Get monitor info for current window
+        HMONITOR hMon = MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi = { sizeof(mi) };
+        GetMonitorInfo(hMon, &mi);
+        
+        // Set window to cover entire screen
+        SetWindowPos(m_hwnd, HWND_TOP,
+            mi.rcMonitor.left, mi.rcMonitor.top,
+            mi.rcMonitor.right - mi.rcMonitor.left,
+            mi.rcMonitor.bottom - mi.rcMonitor.top,
+            SWP_FRAMECHANGED | SWP_NOOWNERZORDER);
+        
+        m_isFullscreen = true;
+    } else {
+        // Restore window style
+        SetWindowLong(m_hwnd, GWL_STYLE, m_savedWindowStyle);
+        
+        // Restore window placement
+        SetWindowPlacement(m_hwnd, &m_savedWindowPlacement);
+        
+        // Ensure frame is redrawn
+        SetWindowPos(m_hwnd, nullptr, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+        
+        m_isFullscreen = false;
+    }
+}
+
 LRESULT WINAPI Application::WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
         return true;
@@ -224,8 +294,26 @@ LRESULT WINAPI Application::WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
         case WM_SIZE:
             if (wParam == SIZE_MINIMIZED)
                 return 0;
-            // Handle resize - would need access to device to resize buffers
+            // Resize swap chain when window is resized
+            if (g_app) {
+                UINT width = LOWORD(lParam);
+                UINT height = HIWORD(lParam);
+                g_app->resizeSwapChain(width, height);
+            }
             return 0;
+            
+        case WM_KEYDOWN:
+            // F11 toggles fullscreen
+            if (wParam == VK_F11 && g_app) {
+                g_app->toggleFullscreen();
+                return 0;
+            }
+            // Escape exits fullscreen
+            if (wParam == VK_ESCAPE && g_app && g_app->m_isFullscreen) {
+                g_app->toggleFullscreen();
+                return 0;
+            }
+            break;
             
         case WM_SYSCOMMAND:
             if ((wParam & 0xfff0) == SC_KEYMENU) // Disable ALT application menu
@@ -233,6 +321,7 @@ LRESULT WINAPI Application::WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
             break;
             
         case WM_DESTROY:
+            g_app = nullptr;
             ::PostQuitMessage(0);
             return 0;
     }

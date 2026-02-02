@@ -140,6 +140,75 @@ void MainWindow::render() {
         renderConnectionPanel();
     }
 
+    // Loading overlay (rendered last, on top of everything)
+    if (m_isLoading) {
+        renderLoadingOverlay();
+    }
+
+    ImGui::End();
+}
+
+void MainWindow::setLoading(bool loading, const std::string& message) {
+    m_isLoading = loading;
+    m_loadingMessage = message;
+}
+
+void MainWindow::renderLoadingOverlay() {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+
+    // Semi-transparent overlay
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(viewport->WorkSize);
+    ImGui::SetNextWindowBgAlpha(0.7f);
+
+    ImGuiWindowFlags overlayFlags = ImGuiWindowFlags_NoTitleBar |
+                                     ImGuiWindowFlags_NoResize |
+                                     ImGuiWindowFlags_NoMove |
+                                     ImGuiWindowFlags_NoScrollbar |
+                                     ImGuiWindowFlags_NoInputs;
+
+    ImGui::Begin("##LoadingOverlay", nullptr, overlayFlags);
+
+    float windowWidth = viewport->WorkSize.x;
+    float windowHeight = viewport->WorkSize.y;
+
+    // Center the loading content
+    float boxWidth = 250.0f;
+    float boxHeight = 80.0f;
+    float boxX = (windowWidth - boxWidth) * 0.5f;
+    float boxY = (windowHeight - boxHeight) * 0.5f;
+
+    ImGui::SetCursorPos(ImVec2(boxX, boxY));
+
+    ImGui::BeginChild("LoadingBox", ImVec2(boxWidth, boxHeight), true, ImGuiWindowFlags_NoScrollbar);
+
+    // Animated spinner using time
+    static float rotation = 0.0f;
+    rotation += ImGui::GetIO().DeltaTime * 5.0f;
+    if (rotation > 6.28318f) rotation -= 6.28318f;
+
+    // Spinner characters
+    const char* spinnerChars[] = { "|", "/", "-", "\\" };
+    int spinnerIndex = static_cast<int>(rotation * 2.0f) % 4;
+
+    float contentWidth = ImGui::GetContentRegionAvail().x;
+
+    // Spinner
+    ImGui::Spacing();
+    std::string spinnerText = std::string("  ") + spinnerChars[spinnerIndex] + "  ";
+    float spinnerWidth = ImGui::CalcTextSize(spinnerText.c_str()).x;
+    ImGui::SetCursorPosX((contentWidth - spinnerWidth) * 0.5f);
+    ImGui::TextColored(ImVec4(0.48f, 0.64f, 0.97f, 1.0f), "%s", spinnerText.c_str());
+
+    // Loading message
+    ImGui::Spacing();
+    std::string displayMessage = m_loadingMessage.empty() ? "Loading..." : m_loadingMessage;
+    float textWidth = ImGui::CalcTextSize(displayMessage.c_str()).x;
+    ImGui::SetCursorPosX((contentWidth - textWidth) * 0.5f);
+    ImGui::Text("%s", displayMessage.c_str());
+
+    ImGui::EndChild();
+
     ImGui::End();
 }
 
@@ -164,13 +233,17 @@ void MainWindow::renderToolbar() {
     ImGui::Spacing();
 
     float availWidth = ImGui::GetContentRegionAvail().x;
-    float labelWidth = 90.0f;
-    float buttonWidth = 70.0f;
+    float labelWidth = 80.0f;
+
+    // Calculate button width based on text + padding
+    float browseWidth = ImGui::CalcTextSize("Browse").x + ImGui::GetStyle().FramePadding.x * 2 + 16.0f;
+    float inputWidth = availWidth - labelWidth - browseWidth - 20.0f;
+    if (inputWidth < 200.0f) inputWidth = 200.0f;
 
     // Log file path
     ImGui::Text("Log File:");
     ImGui::SameLine(labelWidth);
-    ImGui::SetNextItemWidth(availWidth - labelWidth - buttonWidth - 10.0f);
+    ImGui::SetNextItemWidth(inputWidth);
 
     char logPath[512];
     strncpy_s(logPath, m_config.logFilePath.c_str(), sizeof(logPath) - 1);
@@ -180,14 +253,14 @@ void MainWindow::renderToolbar() {
     }
 
     ImGui::SameLine();
-    if (ImGui::Button("Browse##log", ImVec2(buttonWidth, 0))) {
+    if (ImGui::Button("Browse##log", ImVec2(browseWidth, 0))) {
         browseLogFile();
     }
 
     // Output path
     ImGui::Text("Output Dir:");
     ImGui::SameLine(labelWidth);
-    ImGui::SetNextItemWidth(availWidth - labelWidth - buttonWidth - 10.0f);
+    ImGui::SetNextItemWidth(inputWidth);
 
     char outPath[512];
     strncpy_s(outPath, m_config.htmlOutputPath.c_str(), sizeof(outPath) - 1);
@@ -197,7 +270,7 @@ void MainWindow::renderToolbar() {
     }
 
     ImGui::SameLine();
-    if (ImGui::Button("Browse##out", ImVec2(buttonWidth, 0))) {
+    if (ImGui::Button("Browse##out", ImVec2(browseWidth, 0))) {
         browseOutputPath();
     }
 
@@ -207,31 +280,43 @@ void MainWindow::renderToolbar() {
 void MainWindow::renderSearchSection() {
     ImGui::Spacing();
 
+    const ImGuiStyle& style = ImGui::GetStyle();
+    float padding = style.FramePadding.x * 2 + 12.0f;  // Extra padding for comfortable buttons
+
+    // Calculate button widths based on actual text content
+    float searchWidth = ImGui::CalcTextSize("Search").x + padding;
+    float lastQueryWidth = ImGui::CalcTextSize("Last Query").x + padding;
+    float allIdsWidth = ImGui::CalcTextSize("All IDs").x + padding;
+    float exportWidth = ImGui::CalcTextSize("Export HTML").x + padding;
+    float connectWidth = ImGui::CalcTextSize("DB Connected").x + padding;  // Use longer text for consistent size
+
+    float idInputWidth = 120.0f;
+
     // Search row
     ImGui::Text("ID:");
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(120.0f);
+    ImGui::SetNextItemWidth(idInputWidth);
 
     bool enterPressed = ImGui::InputText("##searchid", m_searchId, sizeof(m_searchId),
                                           ImGuiInputTextFlags_EnterReturnsTrue);
 
     ImGui::SameLine();
-    if (ImGui::Button("Search") || enterPressed) {
+    if (ImGui::Button("Search", ImVec2(searchWidth, 0)) || enterPressed) {
         searchById();
     }
 
     ImGui::SameLine();
-    if (ImGui::Button("Last Query")) {
+    if (ImGui::Button("Last Query", ImVec2(lastQueryWidth, 0))) {
         searchLastQuery();
     }
 
     ImGui::SameLine();
-    if (ImGui::Button("All IDs")) {
+    if (ImGui::Button("All IDs", ImVec2(allIdsWidth, 0))) {
         loadAllIds();
     }
 
     ImGui::SameLine();
-    if (ImGui::Button("Export HTML")) {
+    if (ImGui::Button("Export HTML", ImVec2(exportWidth, 0))) {
         exportHtmlAll();
     }
 
@@ -245,12 +330,12 @@ void MainWindow::renderSearchSection() {
 
     if (m_sqlConnector.isConnected()) {
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.5f, 0.2f, 1.0f));
-        if (ImGui::Button("DB Connected")) {
+        if (ImGui::Button("DB Connected", ImVec2(connectWidth, 0))) {
             m_showConnectionPanel = true;
         }
         ImGui::PopStyleColor();
     } else {
-        if (ImGui::Button("Connect DB")) {
+        if (ImGui::Button("Connect DB", ImVec2(connectWidth, 0))) {
             m_showConnectionPanel = true;
         }
     }
@@ -266,8 +351,11 @@ void MainWindow::renderMainContent() {
 
     // Two-panel layout when we have query result
     bool showRightPanel = m_lastResult.query.found || m_queryResult.success;
+    
+    // Responsive threshold: collapse to single panel on narrow windows
+    float minTwoPanelWidth = 650.0f;
 
-    if (showRightPanel && availWidth > 600.0f) {
+    if (showRightPanel && availWidth > minTwoPanelWidth) {
         float leftWidth = availWidth * m_leftPanelWidth - 5.0f;
         float rightWidth = availWidth * (1.0f - m_leftPanelWidth) - 5.0f;
 
@@ -281,7 +369,7 @@ void MainWindow::renderMainContent() {
         if (ImGui::IsItemActive()) {
             float delta = ImGui::GetIO().MouseDelta.x / availWidth;
             m_leftPanelWidth += delta;
-            m_leftPanelWidth = std::clamp(m_leftPanelWidth, 0.3f, 0.8f);
+            m_leftPanelWidth = std::clamp(m_leftPanelWidth, 0.25f, 0.85f);
         }
         if (ImGui::IsItemHovered()) {
             ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
@@ -359,7 +447,8 @@ void MainWindow::renderRightPanel(float width, float height) {
         ImGui::SameLine();
         ImGui::SetNextItemWidth(50.0f);
         if (ImGui::InputText("##sep", m_csvSeparator, sizeof(m_csvSeparator))) {
-            saveSqlSettings();
+            m_config.csvSeparator = m_csvSeparator;
+            m_configManager.save(m_config);
         }
 
         ImGui::Spacing();
@@ -488,13 +577,63 @@ void MainWindow::renderIdsListSection() {
 }
 
 void MainWindow::renderConnectionPanel() {
-    ImGui::SetNextWindowSize(ImVec2(400, 300), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(550, 450), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
 
-    if (ImGui::Begin("Database Connection", &m_showConnectionPanel, ImGuiWindowFlags_NoCollapse)) {
-        ImGui::Text("SQL Server Connection Settings");
+    if (ImGui::Begin("Database Connections", &m_showConnectionPanel, ImGuiWindowFlags_NoCollapse)) {
+        float panelWidth = ImGui::GetContentRegionAvail().x;
+
+        // Left side: Connection list
+        ImGui::BeginChild("ConnectionList", ImVec2(180, -40), true);
+        ImGui::TextColored(ImVec4(0.48f, 0.64f, 0.97f, 1.0f), "Saved Connections");
+        ImGui::Separator();
+
+        for (int i = 0; i < static_cast<int>(m_config.connections.size()); i++) {
+            const auto& conn = m_config.connections[i];
+            bool isActive = (i == m_config.activeConnectionIndex && m_sqlConnector.isConnected());
+            bool isSelected = (i == m_editingConnectionIndex);
+
+            ImGui::PushID(i);
+
+            // Highlight active connection
+            if (isActive) {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.62f, 0.81f, 0.42f, 1.0f));
+            }
+
+            std::string label = conn.name;
+            if (isActive) label += " *";
+
+            if (ImGui::Selectable(label.c_str(), isSelected)) {
+                editConnection(i);
+            }
+
+            if (isActive) {
+                ImGui::PopStyleColor();
+            }
+
+            ImGui::PopID();
+        }
+
+        ImGui::EndChild();
+
+        ImGui::SameLine();
+
+        // Right side: Connection form
+        ImGui::BeginChild("ConnectionForm", ImVec2(0, -40), true);
+
+        if (m_editingConnectionIndex >= 0 || m_connName[0] != '\0') {
+            ImGui::TextColored(ImVec4(0.48f, 0.64f, 0.97f, 1.0f),
+                m_editingConnectionIndex >= 0 ? "Edit Connection" : "New Connection");
+        } else {
+            ImGui::TextColored(ImVec4(0.48f, 0.64f, 0.97f, 1.0f), "Connection Details");
+        }
         ImGui::Separator();
         ImGui::Spacing();
+
+        ImGui::Text("Name:");
+        ImGui::SameLine(100);
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputText("##connname", m_connName, sizeof(m_connName));
 
         ImGui::Text("Server:");
         ImGui::SameLine(100);
@@ -525,32 +664,84 @@ void MainWindow::renderConnectionPanel() {
         ImGui::Separator();
         ImGui::Spacing();
 
+        // Status
         if (m_sqlConnector.isConnected()) {
-            ImGui::TextColored(ImVec4(0.62f, 0.81f, 0.42f, 1.0f), "Status: Connected");
-
-            ImGui::Spacing();
-
-            if (ImGui::Button("Disconnect", ImVec2(120, 0))) {
-                disconnectFromDatabase();
+            int activeIdx = m_config.activeConnectionIndex;
+            if (activeIdx >= 0 && activeIdx < static_cast<int>(m_config.connections.size())) {
+                ImGui::TextColored(ImVec4(0.62f, 0.81f, 0.42f, 1.0f),
+                    "Connected: %s", m_config.connections[activeIdx].name.c_str());
+            } else {
+                ImGui::TextColored(ImVec4(0.62f, 0.81f, 0.42f, 1.0f), "Connected");
             }
         } else {
-            ImGui::TextDisabled("Status: Not connected");
+            ImGui::TextDisabled("Not connected");
+        }
 
-            ImGui::Spacing();
+        ImGui::Spacing();
 
-            if (ImGui::Button("Connect", ImVec2(120, 0))) {
-                connectToDatabase();
+        // Calculate button widths based on text
+        const ImGuiStyle& style = ImGui::GetStyle();
+        float btnPadding = style.FramePadding.x * 2 + 16.0f;
+        float saveWidth = ImGui::CalcTextSize("Save").x + btnPadding;
+        float connectWidth = ImGui::CalcTextSize("Connect").x + btnPadding;
+        float deleteWidth = ImGui::CalcTextSize("Delete").x + btnPadding;
+        float clearWidth = ImGui::CalcTextSize("Clear").x + btnPadding;
+
+        // Form buttons
+        if (ImGui::Button("Save", ImVec2(saveWidth, 0))) {
+            saveCurrentConnection();
+        }
+
+        ImGui::SameLine();
+        if (m_editingConnectionIndex >= 0) {
+            if (ImGui::Button("Connect", ImVec2(connectWidth, 0))) {
+                saveCurrentConnection();
+                connectToDatabase(static_cast<int>(m_config.connections.size()) - 1);
             }
         }
 
         ImGui::SameLine();
-        if (ImGui::Button("Save Settings", ImVec2(120, 0))) {
-            saveSqlSettings();
-            setStatus("Connection settings saved");
+        if (m_editingConnectionIndex >= 0) {
+            if (ImGui::Button("Delete", ImVec2(deleteWidth, 0))) {
+                deleteConnection(m_editingConnectionIndex);
+                clearConnectionForm();
+            }
         }
 
         ImGui::SameLine();
-        if (ImGui::Button("Close", ImVec2(80, 0))) {
+        if (ImGui::Button("Clear", ImVec2(clearWidth, 0))) {
+            clearConnectionForm();
+        }
+
+        ImGui::EndChild();
+
+        // Bottom buttons - calculate widths
+        float newConnWidth = ImGui::CalcTextSize("+ New Connection").x + btnPadding;
+        float disconnectWidth = ImGui::CalcTextSize("Disconnect").x + btnPadding;
+        float closeWidth = ImGui::CalcTextSize("Close").x + btnPadding;
+
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        if (ImGui::Button("+ New Connection", ImVec2(newConnWidth, 0))) {
+            addNewConnection();
+        }
+
+        ImGui::SameLine();
+        if (m_sqlConnector.isConnected()) {
+            if (ImGui::Button("Disconnect", ImVec2(disconnectWidth, 0))) {
+                disconnectFromDatabase();
+            }
+        } else if (m_editingConnectionIndex >= 0) {
+            if (ImGui::Button("Connect", ImVec2(connectWidth, 0))) {
+                connectToDatabase(m_editingConnectionIndex);
+            }
+        }
+
+        ImGui::SameLine();
+        float closeButtonX = panelWidth - closeWidth;
+        ImGui::SetCursorPosX(closeButtonX);
+        if (ImGui::Button("Close", ImVec2(closeWidth, 0))) {
             m_showConnectionPanel = false;
         }
     }
@@ -652,9 +843,11 @@ void MainWindow::searchById() {
         return;
     }
 
+    setLoading(true, "Searching for ID...");
     m_lastResult = m_processor.processQuery(m_searchId, m_config.logFilePath, m_config.autoCopy);
     m_allIds.clear();
     m_queryResult = SqlResult{}; // Clear previous result
+    setLoading(false);
 
     if (m_lastResult.query.found) {
         if (m_lastResult.copiedToClipboard) {
@@ -673,9 +866,11 @@ void MainWindow::searchLastQuery() {
         return;
     }
 
+    setLoading(true, "Finding last query...");
     m_lastResult = m_processor.processLastQuery(m_config.logFilePath, m_config.autoCopy);
     m_allIds.clear();
     m_queryResult = SqlResult{};
+    setLoading(false);
 
     if (m_lastResult.query.found) {
         strncpy_s(m_searchId, m_lastResult.query.id.c_str(), sizeof(m_searchId) - 1);
@@ -695,8 +890,10 @@ void MainWindow::loadAllIds() {
         return;
     }
 
+    setLoading(true, "Loading all IDs...");
     m_allIds = m_parser.getAllIds(m_config.logFilePath);
     m_lastResult = ProcessResult{};
+    setLoading(false);
 
     if (m_allIds.empty()) {
         setStatus("No IDs found in log file", true);
@@ -711,9 +908,11 @@ void MainWindow::exportHtml(const std::string& targetId) {
         return;
     }
 
+    setLoading(true, "Exporting HTML for " + targetId + "...");
     auto executions = m_parser.parseLogFileAdvanced(m_config.logFilePath, targetId);
 
     if (executions.empty()) {
+        setLoading(false);
         setStatus("No data found for ID: " + targetId, true);
         return;
     }
@@ -726,9 +925,11 @@ void MainWindow::exportHtml(const std::string& targetId) {
     std::string outputPath = m_config.htmlOutputPath + "\\sql_report_" + targetId + ".html";
 
     if (m_htmlGenerator.saveReport(html, outputPath)) {
+        setLoading(false);
         setStatus("HTML exported: " + outputPath);
         ShellExecuteA(nullptr, "open", outputPath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     } else {
+        setLoading(false);
         setStatus("Failed to export HTML", true);
     }
 }
@@ -739,13 +940,16 @@ void MainWindow::exportHtmlAll() {
         return;
     }
 
+    setLoading(true, "Collecting all IDs...");
     auto ids = m_parser.getAllIds(m_config.logFilePath);
 
     if (ids.empty()) {
+        setLoading(false);
         setStatus("No IDs found in log file", true);
         return;
     }
 
+    setLoading(true, "Exporting HTML for all queries...");
     std::vector<Execution> allExecutions;
     for (const auto& info : ids) {
         auto executions = m_parser.parseLogFileAdvanced(m_config.logFilePath, info.id);
@@ -760,10 +964,12 @@ void MainWindow::exportHtmlAll() {
     std::string outputPath = m_config.htmlOutputPath + "\\sql_report_all.html";
 
     if (m_htmlGenerator.saveReport(html, outputPath)) {
+        setLoading(false);
         setStatus("HTML exported: " + outputPath + " (" +
                   std::to_string(allExecutions.size()) + " queries)");
         ShellExecuteA(nullptr, "open", outputPath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     } else {
+        setLoading(false);
         setStatus("Failed to export HTML", true);
     }
 }
@@ -821,6 +1027,7 @@ void MainWindow::browseOutputPath() {
 
 // SQL Actions
 void MainWindow::connectToDatabase() {
+    // Connect using form data (for quick connect)
     if (strlen(m_sqlServer) == 0 || strlen(m_sqlDatabase) == 0) {
         setStatus("Please enter server and database name", true);
         return;
@@ -838,7 +1045,38 @@ void MainWindow::connectToDatabase() {
 
     if (success) {
         setStatus("Connected to database successfully!");
-        saveSqlSettings();
+    } else {
+        setStatus("Connection failed: " + m_sqlConnector.getLastError(), true);
+    }
+}
+
+void MainWindow::connectToDatabase(int connectionIndex) {
+    if (connectionIndex < 0 || connectionIndex >= static_cast<int>(m_config.connections.size())) {
+        setStatus("Invalid connection index", true);
+        return;
+    }
+
+    const auto& conn = m_config.connections[connectionIndex];
+
+    if (conn.server.empty() || conn.database.empty()) {
+        setStatus("Server and database name required", true);
+        return;
+    }
+
+    setStatus("Connecting to " + conn.name + "...");
+
+    bool success = m_sqlConnector.connect(
+        conn.server,
+        conn.database,
+        conn.username,
+        conn.password,
+        conn.useWindowsAuth
+    );
+
+    if (success) {
+        m_config.activeConnectionIndex = connectionIndex;
+        m_configManager.save(m_config);
+        setStatus("Connected to " + conn.name);
     } else {
         setStatus("Connection failed: " + m_sqlConnector.getLastError(), true);
     }
@@ -846,6 +1084,7 @@ void MainWindow::connectToDatabase() {
 
 void MainWindow::disconnectFromDatabase() {
     m_sqlConnector.disconnect();
+    m_config.activeConnectionIndex = -1;
     m_queryResult = SqlResult{};
     setStatus("Disconnected from database");
 }

@@ -27,6 +27,10 @@ private:
     bool m_statusIsError = false;
     bool m_shouldQuit = false;
 
+    // Loading state
+    bool m_isLoading = false;
+    std::string m_loadingMessage;
+
     // Config
     ConfigManager m_configManager;
     Config m_config;
@@ -70,6 +74,7 @@ private:
     void renderConnectionPanel();
     void renderQueryResultPanel();
     void renderStatusBar();
+    void renderLoadingOverlay();
 
     // Actions
     void searchById();
@@ -96,6 +101,7 @@ private:
 
     // Helpers
     void setStatus(const std::string& msg, bool isError = false);
+    void setLoading(bool loading, const std::string& message = "");
     void applyThemeOnce();
     void loadConnectionToForm(int index);
     void clearConnectionForm();

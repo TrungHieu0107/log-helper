@@ -78,3 +78,5 @@ log_parser_config.json
 
 # HTML output files
 sql_report_*.html
+
+.claude/
