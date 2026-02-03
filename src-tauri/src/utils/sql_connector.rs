@@ -7,19 +7,31 @@ use odbc_api::{
     buffers::TextRowSet, Connection, ConnectionOptions, Cursor, Environment, ResultSetMetadata,
 };
 use std::sync::OnceLock;
+use serde::Serialize;
 
 /// Global ODBC environment (initialized once).
 static ODBC_ENV: OnceLock<Environment> = OnceLock::new();
 
 /// Get or initialize the global ODBC environment.
 fn get_environment() -> Result<&'static Environment, String> {
-    ODBC_ENV.get_or_try_init(|| {
-        Environment::new().map_err(|e| format!("Failed to create ODBC environment: {}", e))
-    })
+    // Try to get existing environment
+    if let Some(env) = ODBC_ENV.get() {
+        return Ok(env);
+    }
+    
+    // Create new environment
+    match Environment::new() {
+        Ok(env) => {
+            // Try to set it, if another thread beat us, use theirs
+            let _ = ODBC_ENV.set(env);
+            Ok(ODBC_ENV.get().unwrap())
+        }
+        Err(e) => Err(format!("Failed to create ODBC environment: {}", e)),
+    }
 }
 
 /// SQL column metadata.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct SqlColumn {
     pub name: String,
     pub sql_type: i16,
@@ -27,7 +39,7 @@ pub struct SqlColumn {
 }
 
 /// Result of a SQL query execution.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct SqlResult {
     pub success: bool,
     pub error: Option<String>,
@@ -157,7 +169,7 @@ impl SqlConnector {
         };
 
         // Execute the query
-        let cursor = match conn.execute(sql, ()) {
+        let mut cursor = match conn.execute(sql, ()) {
             Ok(Some(cursor)) => cursor,
             Ok(None) => {
                 // Non-SELECT statement (INSERT, UPDATE, DELETE, etc.)
@@ -179,10 +191,17 @@ impl SqlConnector {
                 .unwrap_or_else(|_| format!("Column{}", i));
             let data_type = cursor.col_data_type(i).ok();
             
+            // Get column size, converting NonZero to usize
+            let size = data_type
+                .as_ref()
+                .and_then(|dt| dt.column_size())
+                .map(|nz| nz.get())
+                .unwrap_or(0);
+            
             columns.push(SqlColumn {
                 name,
-                sql_type: data_type.map(|dt| dt.data_type() as i16).unwrap_or(0),
-                size: data_type.and_then(|dt| dt.column_size()).unwrap_or(0),
+                sql_type: 0, // Simplified - just use 0 for now
+                size,
             });
         }
 

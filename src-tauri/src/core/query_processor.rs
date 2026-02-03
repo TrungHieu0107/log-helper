@@ -5,9 +5,10 @@
 use crate::core::log_parser::{LogParser, QueryResult};
 use crate::core::sql_formatter;
 use crate::utils::clipboard;
+use serde::Serialize;
 
 /// Result of processing a query.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct ProcessResult {
     pub query: QueryResult,
     pub filled_sql: String,

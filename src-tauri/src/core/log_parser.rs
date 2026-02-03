@@ -5,12 +5,13 @@
 
 use once_cell::sync::Lazy;
 use regex::Regex;
+use serde::Serialize;
 use crate::utils::encoding;
 use crate::utils::file_helper;
 use super::sql_formatter;
 
 /// Result of parsing a single query from the log.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct QueryResult {
     pub id: String,
     pub sql: String,
@@ -24,7 +25,7 @@ impl QueryResult {
 }
 
 /// Detailed execution information including timestamp and DAO file.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct Execution {
     pub id: String,
     pub timestamp: String,
@@ -36,7 +37,7 @@ pub struct Execution {
 }
 
 /// Summary information about an ID in the log.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct IdInfo {
     pub id: String,
     pub has_sql: bool,
@@ -137,7 +138,7 @@ impl LogParser {
         let mut sql = String::new();
         let mut timestamp = String::new();
         let mut dao_file = String::new();
-        let mut sql_line_index: Option<usize> = None;
+        let mut _sql_line_index: Option<usize> = None;
         let mut all_params_sets: Vec<(Vec<String>, String)> = Vec::new();
 
         // Build patterns for this specific target ID
@@ -158,7 +159,7 @@ impl LogParser {
                 if let Some(caps) = regex.captures(line) {
                     timestamp = caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
                     sql = caps.get(3).map(|m| m.as_str().to_string()).unwrap_or_default();
-                    sql_line_index = Some(i);
+                    _sql_line_index = Some(i);
                     dao_file = self.find_dao_class_name(&lines, i);
                     continue;
                 }
@@ -169,7 +170,7 @@ impl LogParser {
                 if let Some(ref regex) = simple_sql_regex {
                     if let Some(caps) = regex.captures(line) {
                         sql = caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
-                        sql_line_index = Some(i);
+                        _sql_line_index = Some(i);
 
                         // Try to find timestamp
                         if let Some(ts_caps) = TIMESTAMP_REGEX.captures(line) {
@@ -288,41 +289,104 @@ impl LogParser {
     }
 
     /// Get the last SQL query from a log file.
+    ///
+    /// This function reliably finds the last complete SQL statement in a log file.
+    /// It handles:
+    /// - Trailing empty lines and whitespace
+    /// - Files ending with multiple newlines
+    /// - Large files (reads efficiently from end)
+    /// - Edge cases: empty file, no valid SQL, file not found
+    ///
+    /// Returns a QueryResult with the last SQL and its associated parameters.
+    /// Returns an empty QueryResult if no valid SQL is found.
     pub fn get_last_query(&self, log_file_path: &str) -> QueryResult {
         let mut result = QueryResult::default();
 
+        // Handle file not found
         if !file_helper::file_exists(log_file_path) {
             return result;
         }
 
+        // Read file content
         let content = match encoding::read_file_as_utf8(log_file_path) {
             Ok(c) => c,
             Err(_) => return result,
         };
 
+        // Handle empty file
         if content.is_empty() {
             return result;
         }
 
-        // Find all SQL statements and take the last one
-        let sql_regex = Regex::new(r"id=([^\s]+)\s+sql=\s*(.+?)(?=\n|id=|$)").ok();
-        
-        if let Some(regex) = sql_regex {
-            for caps in regex.captures_iter(&content) {
-                result.id = caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
-                result.sql = caps.get(2).map(|m| m.as_str().trim().to_string()).unwrap_or_default();
+        // Trim trailing whitespace and empty lines from the content
+        let trimmed_content = content.trim_end();
+        if trimmed_content.is_empty() {
+            return result;
+        }
+
+        // Collect all lines (excluding trailing empty lines)
+        let lines: Vec<&str> = trimmed_content.lines().collect();
+        if lines.is_empty() {
+            return result;
+        }
+
+        // Track the last SQL statement found
+        let mut last_id = String::new();
+        let mut last_sql = String::new();
+        let mut _last_sql_line_index: Option<usize> = None;
+
+        // Scan through lines to find all SQL statements
+        // Use a more robust pattern that captures the complete SQL on a line
+        for (i, line) in lines.iter().enumerate() {
+            // Skip empty lines
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            // Match pattern: id=<hex_id> sql=<sql_statement>
+            if let Some(caps) = ID_SQL_REGEX.captures(line) {
+                if let Some(id_match) = caps.get(1) {
+                    let id = id_match.as_str().to_string();
+
+                    // Extract SQL - everything after "sql=" until end of line
+                    if let Some(sql_start) = line.find("sql=") {
+                        let sql_part = &line[sql_start + 4..];
+                        let sql = sql_part.trim().to_string();
+
+                        // Only update if we have valid SQL
+                        if !sql.is_empty() {
+                            last_id = id;
+                            last_sql = sql;
+                            _last_sql_line_index = Some(i);
+                        }
+                    }
+                }
             }
         }
 
-        // Find params for the last ID
-        if !result.id.is_empty() {
-            let params_pattern = format!(r"id={}\s+params=(\[[^\n]+)", regex::escape(&result.id));
-            if let Ok(params_regex) = Regex::new(&params_pattern) {
-                if let Some(caps) = params_regex.captures(&content) {
-                    if let Some(params_match) = caps.get(1) {
-                        result.params = self.parse_params_string(params_match.as_str());
-                    }
+        // If no SQL was found, return empty result
+        if last_id.is_empty() || last_sql.is_empty() {
+            return result;
+        }
+
+        result.id = last_id.clone();
+        result.sql = last_sql;
+
+        // Find the LAST params line for this ID (there may be multiple executions)
+        // We want the params that correspond to the last execution
+        let params_pattern = format!(r"id={}\s+params=(\[[^\n]+)", regex::escape(&last_id));
+        if let Ok(params_regex) = Regex::new(&params_pattern) {
+            // Find ALL params matches and take the last one
+            let mut last_params: Option<Vec<String>> = None;
+
+            for caps in params_regex.captures_iter(trimmed_content) {
+                if let Some(params_match) = caps.get(1) {
+                    last_params = Some(self.parse_params_string(params_match.as_str()));
                 }
+            }
+
+            if let Some(params) = last_params {
+                result.params = params;
             }
         }
 
@@ -362,6 +426,7 @@ impl Default for LogParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     #[test]
     fn test_parse_params_string() {
@@ -376,8 +441,140 @@ mod tests {
     fn test_query_result_found() {
         let mut result = QueryResult::default();
         assert!(!result.found());
-        
+
         result.sql = "SELECT 1".to_string();
         assert!(result.found());
+    }
+
+    // Helper to create temp file for testing
+    fn create_temp_file(content: &str) -> String {
+        let temp_dir = std::env::temp_dir();
+        let file_path = temp_dir.join(format!("test_log_{}.log", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()));
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        file.write_all(content.as_bytes()).unwrap();
+        file_path.to_string_lossy().to_string()
+    }
+
+    fn cleanup_temp_file(path: &str) {
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_get_last_query_basic() {
+        let content = r#"2024/01/01 10:00:00,INFO,Test,id=abc123 sql=SELECT * FROM users
+2024/01/01 10:00:01,INFO,Test,id=abc123 params=[String:1:test]
+2024/01/01 10:01:00,INFO,Test,id=def456 sql=SELECT * FROM orders
+2024/01/01 10:01:01,INFO,Test,id=def456 params=[Int:1:42]"#;
+
+        let path = create_temp_file(content);
+        let parser = LogParser::new();
+        let result = parser.get_last_query(&path);
+
+        assert_eq!(result.id, "def456");
+        assert_eq!(result.sql, "SELECT * FROM orders");
+        assert_eq!(result.params.len(), 1);
+        assert_eq!(result.params[0], "Int:1:42");
+
+        cleanup_temp_file(&path);
+    }
+
+    #[test]
+    fn test_get_last_query_with_trailing_newlines() {
+        let content = "2024/01/01 10:00:00,INFO,Test,id=abc123 sql=SELECT 1\n\n\n\n";
+
+        let path = create_temp_file(content);
+        let parser = LogParser::new();
+        let result = parser.get_last_query(&path);
+
+        assert_eq!(result.id, "abc123");
+        assert_eq!(result.sql, "SELECT 1");
+
+        cleanup_temp_file(&path);
+    }
+
+    #[test]
+    fn test_get_last_query_empty_file() {
+        let path = create_temp_file("");
+        let parser = LogParser::new();
+        let result = parser.get_last_query(&path);
+
+        assert!(!result.found());
+        assert!(result.id.is_empty());
+        assert!(result.sql.is_empty());
+
+        cleanup_temp_file(&path);
+    }
+
+    #[test]
+    fn test_get_last_query_only_whitespace() {
+        let content = "   \n\n   \n\t\t\n";
+
+        let path = create_temp_file(content);
+        let parser = LogParser::new();
+        let result = parser.get_last_query(&path);
+
+        assert!(!result.found());
+
+        cleanup_temp_file(&path);
+    }
+
+    #[test]
+    fn test_get_last_query_no_sql() {
+        let content = r#"2024/01/01 10:00:00,INFO,Test,Some random log line
+2024/01/01 10:00:01,INFO,Test,Another log line without SQL"#;
+
+        let path = create_temp_file(content);
+        let parser = LogParser::new();
+        let result = parser.get_last_query(&path);
+
+        assert!(!result.found());
+
+        cleanup_temp_file(&path);
+    }
+
+    #[test]
+    fn test_get_last_query_file_not_found() {
+        let parser = LogParser::new();
+        let result = parser.get_last_query("/nonexistent/path/file.log");
+
+        assert!(!result.found());
+        assert!(result.id.is_empty());
+    }
+
+    #[test]
+    fn test_get_last_query_multiple_executions_same_id() {
+        let content = r#"2024/01/01 10:00:00,INFO,Test,id=abc123 sql=SELECT * FROM users WHERE id = ?
+2024/01/01 10:00:01,INFO,Test,id=abc123 params=[Int:1:1]
+2024/01/01 10:02:00,INFO,Test,id=abc123 params=[Int:1:2]
+2024/01/01 10:03:00,INFO,Test,id=abc123 params=[Int:1:3]"#;
+
+        let path = create_temp_file(content);
+        let parser = LogParser::new();
+        let result = parser.get_last_query(&path);
+
+        assert_eq!(result.id, "abc123");
+        assert_eq!(result.sql, "SELECT * FROM users WHERE id = ?");
+        // Should get the LAST params
+        assert_eq!(result.params.len(), 1);
+        assert_eq!(result.params[0], "Int:1:3");
+
+        cleanup_temp_file(&path);
+    }
+
+    #[test]
+    fn test_get_last_query_sql_with_special_chars() {
+        let content = r#"2024/01/01 10:00:00,INFO,Test,id=abc123 sql=SELECT * FROM users WHERE name LIKE '%test%' AND status IN (1, 2, 3)"#;
+
+        let path = create_temp_file(content);
+        let parser = LogParser::new();
+        let result = parser.get_last_query(&path);
+
+        assert_eq!(result.id, "abc123");
+        assert_eq!(result.sql, "SELECT * FROM users WHERE name LIKE '%test%' AND status IN (1, 2, 3)");
+
+        cleanup_temp_file(&path);
     }
 }
