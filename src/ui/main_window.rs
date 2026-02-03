@@ -8,6 +8,8 @@ use crate::core::log_parser::{Execution, IdInfo, LogParser};
 use crate::core::query_processor::{ProcessResult, QueryProcessor};
 use crate::ui::theme;
 use crate::utils::clipboard;
+#[cfg(feature = "sql")]
+use crate::utils::sql_connector::{SqlConnector, SqlResult};
 use egui::{Color32, RichText, TextEdit, Ui};
 
 /// Main window state.
@@ -44,6 +46,12 @@ pub struct MainWindow {
     // Layout
     left_panel_width_ratio: f32,
     theme_applied: bool,
+
+    // SQL Connector
+    #[cfg(feature = "sql")]
+    sql_connector: SqlConnector,
+    #[cfg(feature = "sql")]
+    query_result: SqlResult,
 }
 
 impl MainWindow {
@@ -78,6 +86,11 @@ impl MainWindow {
 
             left_panel_width_ratio: 0.55,
             theme_applied: false,
+
+            #[cfg(feature = "sql")]
+            sql_connector: SqlConnector::new(),
+            #[cfg(feature = "sql")]
+            query_result: SqlResult::default(),
         }
     }
 
@@ -316,6 +329,7 @@ impl MainWindow {
         egui::Window::new("SQL Server Connections")
             .collapsible(false)
             .resizable(true)
+            .min_width(500.0)
             .show(ctx, |ui| {
                 // Connection list
                 ui.group(|ui| {
@@ -393,11 +407,85 @@ impl MainWindow {
                             self.save_current_connection();
                         }
 
+                        #[cfg(feature = "sql")]
+                        {
+                            let is_connected = self.sql_connector.is_connected();
+                            
+                            if is_connected {
+                                if ui.button("🔌 Disconnect").clicked() {
+                                    self.disconnect_from_database();
+                                }
+                            } else {
+                                if ui.button("🔗 Connect").clicked() {
+                                    self.connect_to_database();
+                                }
+                            }
+                        }
+
                         if ui.button("Close").clicked() {
                             self.show_connection_panel = false;
                         }
                     });
                 });
+
+                // SQL Execution section (only when connected)
+                #[cfg(feature = "sql")]
+                if self.sql_connector.is_connected() {
+                    ui.add_space(10.0);
+                    ui.group(|ui| {
+                        ui.heading("Query Execution");
+                        
+                        ui.horizontal(|ui| {
+                            if ui.button("▶ Execute Query").clicked() {
+                                self.execute_current_query();
+                            }
+                            
+                            if ui.button("📋 Copy as CSV").clicked() {
+                                self.copy_result_as_csv();
+                            }
+                            
+                            ui.label("CSV Separator:");
+                            let mut sep = self.config.csv_separator.clone();
+                            if ui.add(TextEdit::singleline(&mut sep).desired_width(30.0)).changed() {
+                                self.config.csv_separator = sep;
+                                let _ = self.config_manager.save(&self.config);
+                            }
+                        });
+                        
+                        // Query result table
+                        if !self.query_result.columns.is_empty() {
+                            ui.add_space(5.0);
+                            ui.label(format!("Results: {} rows", self.query_result.rows.len()));
+                            
+                            egui::ScrollArea::both()
+                                .max_height(300.0)
+                                .show(ui, |ui| {
+                                    egui::Grid::new("result_table")
+                                        .striped(true)
+                                        .show(ui, |ui| {
+                                            // Header row
+                                            for col in &self.query_result.columns {
+                                                ui.label(RichText::new(&col.name).strong());
+                                            }
+                                            ui.end_row();
+                                            
+                                            // Data rows (limit display to 100 for performance)
+                                            for row in self.query_result.rows.iter().take(100) {
+                                                for cell in row {
+                                                    ui.label(cell);
+                                                }
+                                                ui.end_row();
+                                            }
+                                            
+                                            if self.query_result.rows.len() > 100 {
+                                                ui.label(format!("... and {} more rows", self.query_result.rows.len() - 100));
+                                                ui.end_row();
+                                            }
+                                        });
+                                });
+                        }
+                    });
+                }
             });
     }
 
@@ -610,6 +698,96 @@ impl MainWindow {
     fn set_status(&mut self, msg: &str, is_error: bool) {
         self.status_message = msg.to_string();
         self.status_is_error = is_error;
+    }
+
+    // SQL Connection methods
+    #[cfg(feature = "sql")]
+    fn connect_to_database(&mut self) {
+        if self.editing_connection_index < 0 {
+            self.set_status("Please select a connection first", true);
+            return;
+        }
+
+        let idx = self.editing_connection_index as usize;
+        if let Some(conn) = self.config.connections.get(idx) {
+            let success = self.sql_connector.connect(
+                &conn.server,
+                &conn.database,
+                &conn.username,
+                &conn.password,
+                conn.use_windows_auth,
+            );
+
+            if success {
+                self.config.active_connection_index = idx as i32;
+                let _ = self.config_manager.save(&self.config);
+                self.set_status(&format!("Connected to {}", conn.name), false);
+            } else {
+                self.set_status(
+                    &format!("Connection failed: {}", self.sql_connector.get_last_error()),
+                    true,
+                );
+            }
+        }
+    }
+
+    #[cfg(feature = "sql")]
+    fn disconnect_from_database(&mut self) {
+        self.sql_connector.disconnect();
+        self.config.active_connection_index = -1;
+        let _ = self.config_manager.save(&self.config);
+        self.set_status("Disconnected", false);
+    }
+
+    #[cfg(feature = "sql")]
+    fn execute_current_query(&mut self) {
+        if !self.sql_connector.is_connected() {
+            self.set_status("Not connected to database", true);
+            return;
+        }
+
+        if self.last_result.filled_sql.is_empty() {
+            self.set_status("No SQL query to execute", true);
+            return;
+        }
+
+        self.query_result = self.sql_connector.execute_query(&self.last_result.filled_sql);
+
+        if self.query_result.success {
+            self.set_status(
+                &format!(
+                    "Query executed: {} rows returned",
+                    self.query_result.rows.len()
+                ),
+                false,
+            );
+        } else {
+            self.set_status(
+                &format!(
+                    "Query failed: {}",
+                    self.query_result.error.as_deref().unwrap_or("Unknown error")
+                ),
+                true,
+            );
+        }
+    }
+
+    #[cfg(feature = "sql")]
+    fn copy_result_as_csv(&mut self) {
+        if self.query_result.rows.is_empty() {
+            self.set_status("No results to copy", true);
+            return;
+        }
+
+        let csv = SqlConnector::result_to_csv(&self.query_result, &self.config.csv_separator);
+        if clipboard::copy_to_clipboard(&csv) {
+            self.set_status(
+                &format!("Copied {} rows as CSV", self.query_result.rows.len()),
+                false,
+            );
+        } else {
+            self.set_status("Failed to copy to clipboard", true);
+        }
     }
 }
 

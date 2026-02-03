@@ -1,67 +1,22 @@
-# Build directories
-build/
-out/
-cmake-build-*/
-x64/
-x86/
-Debug/
-Release/
-MinSizeRel/
-RelWithDebInfo/
-bin/
+# Rust build output
+target/
 
-# Compiled binaries
-*.exe
-*.dll
-*.lib
-*.a
-*.o
-*.obj
-*.pdb
-*.ilk
-*.exp
+# Cargo lock file (optional - include for binaries, exclude for libraries)
+# Cargo.lock
 
-# CMake generated files
-CMakeCache.txt
-CMakeFiles/
-cmake_install.cmake
-Makefile
-*.cmake
-!CMakeLists.txt
-
-# Visual Studio
-.vs/
-*.vcxproj
-*.vcxproj.filters
-*.vcxproj.user
-*.sln
-*.suo
-*.user
-*.userosscache
-*.sdf
-*.opensdf
-*.VC.db
-*.VC.VC.opendb
-ipch/
-*.aps
-
-# VS Code
+# IDE and editor files
 .vscode/
-
-# JetBrains IDEs
 .idea/
 *.iml
+.vs/
 
 # Windows
 Thumbs.db
-ehthumbs.db
 Desktop.ini
 $RECYCLE.BIN/
 
 # macOS
 .DS_Store
-.AppleDouble
-.LSOverride
 ._*
 
 # Logs
@@ -79,4 +34,5 @@ log_parser_config.json
 # HTML output files
 sql_report_*.html
 
+# Claude/Gemini agent files
 .claude/
