@@ -86,12 +86,12 @@ fn setup_dracula_theme(ctx: &egui::Context) {
     let foreground = egui::Color32::from_rgb(248, 248, 242);  // #f8f8f2
     let comment = egui::Color32::from_rgb(98, 114, 164);      // #6272a4
     let cyan = egui::Color32::from_rgb(139, 233, 253);        // #8be9fd
-    let green = egui::Color32::from_rgb(80, 250, 123);        // #50fa7b
+    let _green = egui::Color32::from_rgb(80, 250, 123);        // #50fa7b
     // let orange = egui::Color32::from_rgb(255, 184, 108);    // #ffb86c
     let pink = egui::Color32::from_rgb(255, 121, 198);        // #ff79c6
     let purple = egui::Color32::from_rgb(189, 147, 249);      // #bd93f9
-    let red = egui::Color32::from_rgb(255, 85, 85);           // #ff5555
-    let yellow = egui::Color32::from_rgb(241, 250, 140);      // #f1fa8c
+    let _red = egui::Color32::from_rgb(255, 85, 85);           // #ff5555
+    let _yellow = egui::Color32::from_rgb(241, 250, 140);      // #f1fa8c
 
     // Global Widget Visuals
     visuals.widgets.noninteractive.bg_fill = background;

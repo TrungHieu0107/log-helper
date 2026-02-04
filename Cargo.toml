@@ -21,11 +21,24 @@ once_cell = "1.18"
 arboard = "3"
 
 # Native file dialogs
+# Native file dialogs
 rfd = "0.14"
+directories = "5"
+anyhow = "1.0"
+uuid = { version = "1", features = ["v4", "fast-rng", "macro-diagnostics"] }
+
+
 
 # Encoding detection
 encoding_rs = "0.8"
 sqlformat = "0.2"
+
+# Database Connectivity
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "mysql", "sqlite", "any"] }
+tokio = { version = "1", features = ["full"] }
+tiberius = { version = "0.12", features = ["tds73", "chrono"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+futures-util = "0.3"
 
 
 [profile.release]
