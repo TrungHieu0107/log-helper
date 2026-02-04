@@ -81,17 +81,36 @@ pub fn replace_placeholders(query: &str, params: &[String]) -> Result<String, St
         let pos: i32 = parts[1].parse().map_err(|_| "Invalid parameter index")?;
         let value = parts[2];
 
+        // Handle NULL explicitly
+        if value == "null" {
+            values_by_pos.insert(pos, "NULL".to_string());
+            continue;
+        }
+
         let parsed_value = match param_type.as_str() {
-            "string" => {
+            "string" | "timestamp" | "date" => {
                 // Escape single quotes for SQL
                 let escaped = value.replace('\'', "''");
                 format!("'{}'", escaped)
+            }
+            "boolean" => {
+                 value.to_uppercase()
             }
             "bigdecimal" | "number" | "int" | "long" | "float" | "double" => {
                 value.to_string()
             }
             _ => {
-                return Err(format!("Unsupported type: {}", param_type));
+                // Default fallback: treat as string (safer) or error? 
+                // Let's treat unknown as string to be safe against new types, or allow raw value?
+                // User requirement: "Handling different parameter types correctly".
+                // If it's unknown, maybe it's safest to quote it if it looks like a string?
+                // Let's err on side of quoting unless it looks numeric.
+                if value.chars().all(|c| c.is_numeric() || c == '.') {
+                     value.to_string()
+                } else {
+                    let escaped = value.replace('\'', "''");
+                    format!("'{}'", escaped)
+                }
             }
         };
 
@@ -106,7 +125,14 @@ pub fn replace_placeholders(query: &str, params: &[String]) -> Result<String, St
         if ch == '?' {
             match values_by_pos.get(&index) {
                 Some(value) => result.push_str(value),
-                None => return Err(format!("Missing value for position {}", index)),
+                None => {
+                    // If param missing, keep ? to indicate issue/allow debugging
+                    result.push('?'); 
+                    // Or return Err? User wants "debuggability". 
+                    // Keeping ? with a warning might be better than failing hard?
+                    // Previous logic returned Err. Let's stick to Err for strictness.
+                    return Err(format!("Missing value for position {}", index));
+                },
             }
             index += 1;
         } else {
@@ -149,6 +175,18 @@ mod tests {
         ];
         let result = replace_placeholders(query, &params).unwrap();
         assert_eq!(result, "SELECT * FROM users WHERE name = 'John' AND id = 42");
+    }
+
+    #[test]
+    fn test_replace_placeholders_types() {
+        let query = "SELECT * FROM t WHERE a = ? AND b = ? AND c = ?";
+        let params = vec![
+            "String:1:null".to_string(),
+            "Timestamp:2:2024-01-01 10:00:00".to_string(),
+            "Boolean:3:true".to_string(),
+        ];
+        let result = replace_placeholders(query, &params).unwrap();
+        assert_eq!(result, "SELECT * FROM t WHERE a = NULL AND b = '2024-01-01 10:00:00' AND c = TRUE");
     }
 
     #[test]

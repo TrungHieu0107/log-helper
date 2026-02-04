@@ -35,6 +35,8 @@ pub struct Config {
     pub active_connection_index: i32,
     #[serde(default = "default_comma")]
     pub csv_separator: String,
+    #[serde(default = "default_encoding")]
+    pub encoding: String,
 }
 
 fn default_true() -> bool {
@@ -49,6 +51,10 @@ fn default_comma() -> String {
     ",".to_string()
 }
 
+fn default_encoding() -> String {
+    "SHIFT_JIS".to_string()
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -59,6 +65,7 @@ impl Default for Config {
             connections: Vec::new(),
             active_connection_index: -1,
             csv_separator: ",".to_string(),
+            encoding: "SHIFT_JIS".to_string(),
         }
     }
 }
@@ -110,6 +117,9 @@ impl ConfigManager {
         }
         if config.csv_separator.is_empty() {
             config.csv_separator = ",".to_string();
+        }
+        if config.encoding.is_empty() {
+            config.encoding = "SHIFT_JIS".to_string();
         }
 
         config

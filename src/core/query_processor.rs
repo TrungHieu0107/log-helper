@@ -2,7 +2,7 @@
 //!
 //! Combines LogParser, SqlFormatter, and ClipboardHelper to process queries.
 
-use crate::core::log_parser::{LogParser, QueryResult};
+use crate::core::log_parser::{Execution, LogParser, QueryResult};
 use crate::core::sql_formatter;
 use crate::utils::clipboard;
 use serde::Serialize;
@@ -10,7 +10,10 @@ use serde::Serialize;
 /// Result of processing a query.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct ProcessResult {
+    /// Single/Legacy query result (e.g. first found)
     pub query: QueryResult,
+    /// All executions found for the ID
+    pub executions: Vec<Execution>,
     pub filled_sql: String,
     pub formatted_sql: String,
     pub formatted_params: String,
@@ -20,7 +23,7 @@ pub struct ProcessResult {
 
 impl ProcessResult {
     pub fn success(&self) -> bool {
-        self.error.is_none() && self.query.found()
+        self.error.is_none() && (!self.query.sql.is_empty() || !self.executions.is_empty())
     }
 }
 
@@ -32,8 +35,12 @@ pub struct QueryProcessor {
 impl QueryProcessor {
     pub fn new() -> Self {
         Self {
-            parser: LogParser::new(),
+            parser: LogParser::default(),
         }
+    }
+
+    pub fn parser_mut(&mut self) -> &mut LogParser {
+        &mut self.parser
     }
 
     /// Process a query by ID.
@@ -47,19 +54,34 @@ impl QueryProcessor {
     ) -> ProcessResult {
         let mut result = ProcessResult::default();
 
-        result.query = self.parser.parse_log_file(log_file_path, target_id);
+        // Use advanced parsing to get all executions
+        result.executions = self.parser.parse_log_file_advanced(log_file_path, target_id);
 
-        if !result.query.found() {
-            result.error = Some(format!("ID not found: {}", target_id));
-            return result;
+        if result.executions.is_empty() {
+             // Fallback to basic parsing ? Or just report not found.
+             // If advanced found nothing, basic likely won't either unless regex differs.
+             // But let's check basic just in case or trust advanced.
+             // Advanced uses same regexes...
+             result.error = Some(format!("ID not found: {}", target_id));
+             return result;
         }
 
-        result.formatted_sql = sql_formatter::format_sql(&result.query.sql);
-        result.formatted_params = sql_formatter::format_params(&result.query.params);
-        result.filled_sql = self.get_filled_query(&result.query);
-
-        if auto_copy && !result.filled_sql.is_empty() {
-            result.copied_to_clipboard = clipboard::copy_to_clipboard(&result.filled_sql);
+        // To maintain backward compatibility with UI parts using `result.query`:
+        // Populate single `query` field from the LAST execution (most likely what user wants if single view).
+        if let Some(last_exec) = result.executions.last() {
+             result.query = QueryResult {
+                 id: last_exec.id.clone(),
+                 sql: last_exec.sql.clone(),
+                 params: last_exec.params.clone(),
+             };
+             
+             result.formatted_sql = sql_formatter::format_sql(&last_exec.sql);
+             result.formatted_params = sql_formatter::format_params(&last_exec.params);
+             result.filled_sql = last_exec.filled_sql.clone();
+             
+             if auto_copy && !result.filled_sql.is_empty() {
+                 result.copied_to_clipboard = clipboard::copy_to_clipboard(&result.filled_sql);
+             }
         }
 
         result

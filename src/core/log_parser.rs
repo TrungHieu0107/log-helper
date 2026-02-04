@@ -6,7 +6,7 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::Serialize;
-use crate::utils::encoding;
+use crate::utils::encoding::{self, read_file_lines};
 use crate::utils::file_helper;
 use super::sql_formatter;
 
@@ -45,7 +45,9 @@ pub struct IdInfo {
 }
 
 /// Log file parser.
-pub struct LogParser;
+pub struct LogParser {
+    encoding: String,
+}
 
 // Compiled regex patterns (lazy initialized for performance)
 static PARAM_REGEX: Lazy<Regex> = Lazy::new(|| {
@@ -69,8 +71,12 @@ static DAO_REGEX: Lazy<Regex> = Lazy::new(|| {
 });
 
 impl LogParser {
-    pub fn new() -> Self {
-        LogParser
+    pub fn new(encoding: String) -> Self {
+        LogParser { encoding }
+    }
+
+    pub fn set_encoding(&mut self, encoding: String) {
+        self.encoding = encoding;
     }
 
     /// Parse log file and get SQL/params for a specific ID.
@@ -84,32 +90,47 @@ impl LogParser {
             return result;
         }
 
-        let content = match encoding::read_file_as_utf8(log_file_path) {
-            Ok(c) => c,
+        let lines = match read_file_lines(log_file_path, &self.encoding) {
+            Ok(iter) => iter,
             Err(_) => return result,
         };
 
-        if content.is_empty() {
-            return result;
-        }
-
-        // Find SQL statement for ID
         let sql_pattern = format!(r"id={}\s+sql=\s*(.+)", regex::escape(target_id));
-        if let Ok(sql_regex) = Regex::new(&sql_pattern) {
-            if let Some(caps) = sql_regex.captures(&content) {
-                if let Some(sql_match) = caps.get(1) {
-                    result.sql = sql_match.as_str().trim().to_string();
+        let params_pattern = format!(r"id={}\s+params=(\[[^\n]+)", regex::escape(target_id));
+        
+        let sql_regex = Regex::new(&sql_pattern).ok();
+        let params_regex = Regex::new(&params_pattern).ok();
+        
+        // Flags to stop early/avoid overwriting if we only want first match (preserves original behavior mostly)
+        // Original behavior: `captures` finds first match.
+        let mut found_sql = false;
+        let mut found_params = false;
+
+        for line in lines {
+            if !found_sql {
+                 if let Some(ref regex) = sql_regex {
+                    if let Some(caps) = regex.captures(&line) {
+                        if let Some(sql_match) = caps.get(1) {
+                            result.sql = sql_match.as_str().trim().to_string();
+                            found_sql = true;
+                        }
+                    }
                 }
             }
-        }
 
-        // Find params for ID
-        let params_pattern = format!(r"id={}\s+params=(\[[^\n]+)", regex::escape(target_id));
-        if let Ok(params_regex) = Regex::new(&params_pattern) {
-            if let Some(caps) = params_regex.captures(&content) {
-                if let Some(params_match) = caps.get(1) {
-                    result.params = self.parse_params_string(params_match.as_str());
+            if !found_params {
+                if let Some(ref regex) = params_regex {
+                    if let Some(caps) = regex.captures(&line) {
+                        if let Some(params_match) = caps.get(1) {
+                            result.params = self.parse_params_string(params_match.as_str());
+                            found_params = true;
+                        }
+                    }
                 }
+            }
+
+            if found_sql && found_params {
+                break;
             }
         }
 
@@ -117,6 +138,7 @@ impl LogParser {
     }
 
     /// Parse log file with advanced metadata extraction.
+    /// capturing all executions for a specific ID.
     pub fn parse_log_file_advanced(&self, log_file_path: &str, target_id: &str) -> Vec<Execution> {
         let mut executions = Vec::new();
 
@@ -124,7 +146,7 @@ impl LogParser {
             return executions;
         }
 
-        let content = match encoding::read_file_as_utf8(log_file_path) {
+        let content = match encoding::read_file_as_utf8(log_file_path, &self.encoding) {
             Ok(c) => c,
             Err(_) => return executions,
         };
@@ -135,13 +157,13 @@ impl LogParser {
 
         let lines: Vec<&str> = content.lines().collect();
         
-        let mut sql = String::new();
-        let mut timestamp = String::new();
-        let mut dao_file = String::new();
-        let mut _sql_line_index: Option<usize> = None;
-        let mut all_params_sets: Vec<(Vec<String>, String)> = Vec::new();
+        // State for parsing
+        let mut current_sql = String::new();
+        let mut current_timestamp = String::new();
+        let mut current_dao = String::new();
+        let mut execution_count = 0;
 
-        // Build patterns for this specific target ID
+        // Patterns
         let full_line_pattern = format!(
             r"^(\d{{4}}/\d{{2}}/\d{{2}}\s+\d{{2}}:\d{{2}}:\d{{2}}),\w+,([^,]+),.*id={}\s+sql=\s*(.+)",
             regex::escape(target_id)
@@ -154,86 +176,104 @@ impl LogParser {
         let params_regex = Regex::new(&params_pattern).ok();
 
         for (i, line) in lines.iter().enumerate() {
-            // Try full pattern first
+            // 1. Check for SQL (Full or Simple)
+            let mut found_new_sql = false;
+            let mut extracted_sql = String::new();
+            let mut extracted_ts = String::new();
+            let mut extracted_dao = String::new();
+
             if let Some(ref regex) = full_line_regex {
                 if let Some(caps) = regex.captures(line) {
-                    timestamp = caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
-                    sql = caps.get(3).map(|m| m.as_str().to_string()).unwrap_or_default();
-                    _sql_line_index = Some(i);
-                    dao_file = self.find_dao_class_name(&lines, i);
-                    continue;
+                    extracted_ts = caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
+                    extracted_sql = caps.get(3).map(|m| m.as_str().to_string()).unwrap_or_default();
+                    extracted_dao = self.find_dao_class_name(&lines, i);
+                    found_new_sql = true;
                 }
             }
 
-            // Fallback: simple SQL pattern
-            if sql.is_empty() {
+            if !found_new_sql {
                 if let Some(ref regex) = simple_sql_regex {
                     if let Some(caps) = regex.captures(line) {
-                        sql = caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
-                        _sql_line_index = Some(i);
-
-                        // Try to find timestamp
+                        extracted_sql = caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
+                        
+                        // Try to find timestamp in this line or previous
                         if let Some(ts_caps) = TIMESTAMP_REGEX.captures(line) {
-                            timestamp = ts_caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
+                            extracted_ts = ts_caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
                         } else if i > 0 {
                             if let Some(ts_caps) = TIMESTAMP_REGEX.captures(lines[i - 1]) {
-                                timestamp = ts_caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
+                                extracted_ts = ts_caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
                             }
                         }
-
-                        dao_file = self.find_dao_class_name(&lines, i);
+                        
+                        extracted_dao = self.find_dao_class_name(&lines, i);
+                        found_new_sql = true;
                     }
                 }
             }
 
-            // Find params
+            // Update state if new SQL found
+            if found_new_sql {
+                 current_sql = extracted_sql;
+                 current_timestamp = extracted_ts;
+                 current_dao = extracted_dao;
+                 continue; 
+            }
+
+            // 2. Check for Params
             if let Some(ref regex) = params_regex {
                 if let Some(caps) = regex.captures(line) {
-                    let params = self.parse_params_string(
-                        caps.get(1).map(|m| m.as_str()).unwrap_or("")
-                    );
-                    
-                    let ts = TIMESTAMP_REGEX.captures(line)
-                        .and_then(|c| c.get(1))
-                        .map(|m| m.as_str().to_string())
-                        .unwrap_or_else(|| timestamp.clone());
-                    
-                    all_params_sets.push((params, ts));
+                    // Only process params if we have a current SQL context
+                    if !current_sql.is_empty() {
+                         let params_str = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+                         let params = self.parse_params_string(params_str);
+                         
+                         // Determine timestamp for this execution
+                         // Use line timestamp if available, otherwise fallback to SQL timestamp
+                         let ts = TIMESTAMP_REGEX.captures(line)
+                            .and_then(|c| c.get(1))
+                            .map(|m| m.as_str().to_string())
+                            .unwrap_or_else(|| current_timestamp.clone());
+                            
+                         execution_count += 1;
+
+                         let filled_sql = sql_formatter::replace_placeholders(&current_sql, &params)
+                             .unwrap_or_else(|_| current_sql.clone());
+
+                         executions.push(Execution {
+                             id: target_id.to_string(),
+                             timestamp: ts,
+                             dao_file: current_dao.clone(),
+                             sql: current_sql.clone(),
+                             filled_sql,
+                             params,
+                             execution_index: execution_count,
+                         });
+                    }
                 }
             }
         }
-
-        // Build executions
-        if !sql.is_empty() {
-            let sql = sql.trim().to_string();
-
-            if !all_params_sets.is_empty() {
-                for (index, (params, ts)) in all_params_sets.into_iter().enumerate() {
-                    let filled_sql = sql_formatter::replace_placeholders(&sql, &params)
-                        .unwrap_or_else(|_| sql.clone());
-
-                    executions.push(Execution {
-                        id: target_id.to_string(),
-                        timestamp: if ts.is_empty() { timestamp.clone() } else { ts },
-                        dao_file: dao_file.clone(),
-                        sql: sql.clone(),
-                        filled_sql,
-                        params,
-                        execution_index: (index + 1) as i32,
-                    });
-                }
-            } else {
-                // No params - single execution
-                executions.push(Execution {
-                    id: target_id.to_string(),
-                    timestamp: timestamp.clone(),
-                    dao_file,
-                    sql: sql.clone(),
-                    filled_sql: sql.clone(),
-                    params: Vec::new(),
-                    execution_index: 1,
-                });
-            }
+        
+        // Edge case: SQL found but NO params found at all?
+        // Logic above only adds execution if params found.
+        // If query has no params, we might miss it?
+        // If `execution_count` is 0 but `current_sql` is set, check if it has no placeholders?
+        // But logging usually logs "params=[]" if empty?
+        // "id=... sql=..."
+        // "id=... params=[]"
+        // If params line is missing entirely, we might want to add it as "Execution without params"?
+        // But standard behavior seems to be SQL then Params. 
+        // Let's handle the case where we finish parsing and have 0 executions but `current_sql` exists.
+        
+        if executions.is_empty() && !current_sql.is_empty() {
+             executions.push(Execution {
+                 id: target_id.to_string(),
+                 timestamp: current_timestamp,
+                 dao_file: current_dao,
+                 sql: current_sql.clone(),
+                 filled_sql: current_sql,
+                 params: Vec::new(),
+                 execution_index: 1,
+             });
         }
 
         executions
@@ -248,38 +288,39 @@ impl LogParser {
             return ids;
         }
 
-        let content = match encoding::read_file_as_utf8(log_file_path) {
-            Ok(c) => c,
+        let lines = match read_file_lines(log_file_path, &self.encoding) {
+            Ok(iter) => iter,
             Err(_) => return ids,
         };
 
-        if content.is_empty() {
-            return ids;
-        }
-
-        // Find all IDs with SQL
-        for caps in ID_SQL_REGEX.captures_iter(&content) {
-            if let Some(id_match) = caps.get(1) {
-                let id = id_match.as_str().to_string();
-                if !seen_ids.contains(&id) {
-                    seen_ids.insert(id.clone());
-                    ids.push(IdInfo {
-                        id,
-                        has_sql: true,
-                        params_count: 0,
-                    });
+        for line in lines {
+            // Check for ID + SQL
+            if let Some(caps) = ID_SQL_REGEX.captures(&line) {
+                 if let Some(id_match) = caps.get(1) {
+                    let id = id_match.as_str().to_string();
+                    if !seen_ids.contains(&id) {
+                        seen_ids.insert(id.clone());
+                        ids.push(IdInfo {
+                            id,
+                            has_sql: true,
+                            params_count: 0,
+                        });
+                    }
                 }
             }
-        }
 
-        // Count params for each ID
-        for caps in ID_PARAMS_REGEX.captures_iter(&content) {
-            if let Some(id_match) = caps.get(1) {
-                let id = id_match.as_str();
-                for info in ids.iter_mut() {
-                    if info.id == id {
-                        info.params_count += 1;
-                        break;
+            // Check for ID + Params
+            if let Some(caps) = ID_PARAMS_REGEX.captures(&line) {
+                 if let Some(id_match) = caps.get(1) {
+                    let id = id_match.as_str();
+                    // Increment params count for existing ID
+                    // Optimization: We could use a map for O(1) lookup, but ids vec order matters for UI?
+                    // Original code preserved order of appearance.
+                    for info in ids.iter_mut() {
+                        if info.id == id {
+                            info.params_count += 1;
+                            break;
+                        }
                     }
                 }
             }
@@ -289,104 +330,64 @@ impl LogParser {
     }
 
     /// Get the last SQL query from a log file.
-    ///
-    /// This function reliably finds the last complete SQL statement in a log file.
-    /// It handles:
-    /// - Trailing empty lines and whitespace
-    /// - Files ending with multiple newlines
-    /// - Large files (reads efficiently from end)
-    /// - Edge cases: empty file, no valid SQL, file not found
-    ///
-    /// Returns a QueryResult with the last SQL and its associated parameters.
-    /// Returns an empty QueryResult if no valid SQL is found.
     pub fn get_last_query(&self, log_file_path: &str) -> QueryResult {
         let mut result = QueryResult::default();
 
-        // Handle file not found
         if !file_helper::file_exists(log_file_path) {
             return result;
         }
 
-        // Read file content
-        let content = match encoding::read_file_as_utf8(log_file_path) {
-            Ok(c) => c,
+        let lines = match read_file_lines(log_file_path, &self.encoding) {
+            Ok(iter) => iter,
             Err(_) => return result,
         };
 
-        // Handle empty file
-        if content.is_empty() {
-            return result;
-        }
-
-        // Trim trailing whitespace and empty lines from the content
-        let trimmed_content = content.trim_end();
-        if trimmed_content.is_empty() {
-            return result;
-        }
-
-        // Collect all lines (excluding trailing empty lines)
-        let lines: Vec<&str> = trimmed_content.lines().collect();
-        if lines.is_empty() {
-            return result;
-        }
-
-        // Track the last SQL statement found
-        let mut last_id = String::new();
-        let mut last_sql = String::new();
-        let mut _last_sql_line_index: Option<usize> = None;
-
-        // Scan through lines to find all SQL statements
-        // Use a more robust pattern that captures the complete SQL on a line
-        for (i, line) in lines.iter().enumerate() {
-            // Skip empty lines
-            if line.trim().is_empty() {
-                continue;
-            }
-
-            // Match pattern: id=<hex_id> sql=<sql_statement>
-            if let Some(caps) = ID_SQL_REGEX.captures(line) {
+        for line in lines {
+             // Match pattern: id=<hex_id> sql=<sql_statement>
+            if let Some(caps) = ID_SQL_REGEX.captures(&line) {
                 if let Some(id_match) = caps.get(1) {
-                    let id = id_match.as_str().to_string();
-
-                    // Extract SQL - everything after "sql=" until end of line
+                     // Extract SQL - everything after "sql=" until end of line
                     if let Some(sql_start) = line.find("sql=") {
                         let sql_part = &line[sql_start + 4..];
                         let sql = sql_part.trim().to_string();
 
-                        // Only update if we have valid SQL
                         if !sql.is_empty() {
-                            last_id = id;
-                            last_sql = sql;
-                            _last_sql_line_index = Some(i);
+                            result.id = id_match.as_str().to_string();
+                            result.sql = sql;
+                            result.params.clear(); // Reset params for new query
                         }
                     }
                 }
+                continue; // Line had sql, so it won't have params typically
             }
-        }
 
-        // If no SQL was found, return empty result
-        if last_id.is_empty() || last_sql.is_empty() {
-            return result;
-        }
-
-        result.id = last_id.clone();
-        result.sql = last_sql;
-
-        // Find the LAST params line for this ID (there may be multiple executions)
-        // We want the params that correspond to the last execution
-        let params_pattern = format!(r"id={}\s+params=(\[[^\n]+)", regex::escape(&last_id));
-        if let Ok(params_regex) = Regex::new(&params_pattern) {
-            // Find ALL params matches and take the last one
-            let mut last_params: Option<Vec<String>> = None;
-
-            for caps in params_regex.captures_iter(trimmed_content) {
-                if let Some(params_match) = caps.get(1) {
-                    last_params = Some(self.parse_params_string(params_match.as_str()));
+            // Match params: id=<hex_id> params=[...]
+            // Only update params if ID matches the last found SQL ID
+            if !result.id.is_empty() {
+                if let Some(caps) = ID_PARAMS_REGEX.captures(&line) {
+                     if let Some(id_match) = caps.get(1) {
+                         if id_match.as_str() == result.id {
+                             if let Some(params_match) = caps.get(1) {
+                                // Re-parse params to get just the bracketed part if regex captured full group?
+                                // ID_PARAMS_REGEX captures id in group 1.
+                                // We need params value.
+                                // Let's check regex in file... `id=([a-f0-9]+)\s+params=`
+                                // It doesn't capture value in current static regex!
+                                // Wait, `get_last_query` original implementation used a local `params_pattern` regex format!
+                                // The global `ID_PARAMS_REGEX` doesn't capture the array.
+                                // We need to extract it manually or use a new regex.
+                                
+                                // Let's simplify: find "params=" and take rest?
+                                if let Some(params_start) = line.find("params=") {
+                                    let params_part = &line[params_start + 7..];
+                                    // Parse array from string...
+                                    // Or use `parse_params_string` on it? `parse_params_string` uses `PARAM_REGEX` which finds `[...]`.
+                                    result.params = self.parse_params_string(params_part);
+                                }
+                             }
+                         }
+                     }
                 }
-            }
-
-            if let Some(params) = last_params {
-                result.params = params;
             }
         }
 
@@ -419,7 +420,7 @@ impl LogParser {
 
 impl Default for LogParser {
     fn default() -> Self {
-        Self::new()
+        Self::new("SHIFT_JIS".to_string())
     }
 }
 
@@ -430,7 +431,7 @@ mod tests {
 
     #[test]
     fn test_parse_params_string() {
-        let parser = LogParser::new();
+        let parser = LogParser::default();
         let params = parser.parse_params_string("[String:1:hello][Int:2:42]");
         assert_eq!(params.len(), 2);
         assert_eq!(params[0], "String:1:hello");
@@ -470,7 +471,7 @@ mod tests {
 2024/01/01 10:01:01,INFO,Test,id=def456 params=[Int:1:42]"#;
 
         let path = create_temp_file(content);
-        let parser = LogParser::new();
+        let parser = LogParser::default();
         let result = parser.get_last_query(&path);
 
         assert_eq!(result.id, "def456");
@@ -486,7 +487,7 @@ mod tests {
         let content = "2024/01/01 10:00:00,INFO,Test,id=abc123 sql=SELECT 1\n\n\n\n";
 
         let path = create_temp_file(content);
-        let parser = LogParser::new();
+        let parser = LogParser::default();
         let result = parser.get_last_query(&path);
 
         assert_eq!(result.id, "abc123");
@@ -498,7 +499,7 @@ mod tests {
     #[test]
     fn test_get_last_query_empty_file() {
         let path = create_temp_file("");
-        let parser = LogParser::new();
+        let parser = LogParser::default();
         let result = parser.get_last_query(&path);
 
         assert!(!result.found());
@@ -513,7 +514,7 @@ mod tests {
         let content = "   \n\n   \n\t\t\n";
 
         let path = create_temp_file(content);
-        let parser = LogParser::new();
+        let parser = LogParser::default();
         let result = parser.get_last_query(&path);
 
         assert!(!result.found());
@@ -527,7 +528,7 @@ mod tests {
 2024/01/01 10:00:01,INFO,Test,Another log line without SQL"#;
 
         let path = create_temp_file(content);
-        let parser = LogParser::new();
+        let parser = LogParser::default();
         let result = parser.get_last_query(&path);
 
         assert!(!result.found());
@@ -537,7 +538,7 @@ mod tests {
 
     #[test]
     fn test_get_last_query_file_not_found() {
-        let parser = LogParser::new();
+        let parser = LogParser::default();
         let result = parser.get_last_query("/nonexistent/path/file.log");
 
         assert!(!result.found());
@@ -552,7 +553,7 @@ mod tests {
 2024/01/01 10:03:00,INFO,Test,id=abc123 params=[Int:1:3]"#;
 
         let path = create_temp_file(content);
-        let parser = LogParser::new();
+        let parser = LogParser::default();
         let result = parser.get_last_query(&path);
 
         assert_eq!(result.id, "abc123");
@@ -569,7 +570,7 @@ mod tests {
         let content = r#"2024/01/01 10:00:00,INFO,Test,id=abc123 sql=SELECT * FROM users WHERE name LIKE '%test%' AND status IN (1, 2, 3)"#;
 
         let path = create_temp_file(content);
-        let parser = LogParser::new();
+        let parser = LogParser::default();
         let result = parser.get_last_query(&path);
 
         assert_eq!(result.id, "abc123");
