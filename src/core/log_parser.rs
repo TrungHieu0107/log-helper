@@ -43,6 +43,7 @@ pub struct Execution {
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct IdInfo {
     pub id: String,
+    pub dao_name: String,
     pub has_sql: bool,
     pub params_count: i32,
 }
@@ -295,20 +296,28 @@ impl LogParser {
             return ids;
         }
 
-        let lines = match read_file_lines(log_file_path, &self.encoding) {
-            Ok(iter) => iter,
-            Err(_) => return ids,
+        // Use full read to enable lookahead/DAO extraction
+        let content = match encoding::read_file_as_utf8(log_file_path, &self.encoding) {
+            Ok(c) => c,
+            Err(_) => return ids, // Fallback or empty
         };
+        
+        let lines: Vec<&str> = content.lines().collect();
 
-        for line in lines {
+        for (i, line) in lines.iter().enumerate() {
             // Check for ID + SQL
-            if let Some(caps) = ID_SQL_REGEX.captures(&line) {
+            if let Some(caps) = ID_SQL_REGEX.captures(line) {
                  if let Some(id_match) = caps.get(1) {
                     let id = id_match.as_str().to_string();
                     if !seen_ids.contains(&id) {
                         seen_ids.insert(id.clone());
+                        
+                        // Extract DAO name
+                        let dao_name = self.find_dao_class_name(&lines, i);
+                        
                         ids.push(IdInfo {
                             id,
+                            dao_name,
                             has_sql: true,
                             params_count: 0,
                         });
@@ -317,12 +326,10 @@ impl LogParser {
             }
 
             // Check for ID + Params
-            if let Some(caps) = ID_PARAMS_REGEX.captures(&line) {
+            if let Some(caps) = ID_PARAMS_REGEX.captures(line) {
                  if let Some(id_match) = caps.get(1) {
                     let id = id_match.as_str();
                     // Increment params count for existing ID
-                    // Optimization: We could use a map for O(1) lookup, but ids vec order matters for UI?
-                    // Original code preserved order of appearance.
                     for info in ids.iter_mut() {
                         if info.id == id {
                             info.params_count += 1;

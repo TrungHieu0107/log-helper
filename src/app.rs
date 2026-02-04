@@ -219,10 +219,17 @@ impl eframe::App for SqlLogParserApp {
                     ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
                         let mut clicked_id = None;
                         for id_info in &self.ids {
-                            let label = if id_info.params_count > 0 {
-                                format!("{} ({})", id_info.id, id_info.params_count)
+                            // Format: "DaoName - ID (count)"
+                            let base_label = if !id_info.dao_name.is_empty() && id_info.dao_name != "Unknown" {
+                                format!("{} - {}", id_info.dao_name, id_info.id)
                             } else {
                                 id_info.id.clone()
+                            };
+
+                            let label = if id_info.params_count > 0 {
+                                format!("{} ({})", base_label, id_info.params_count)
+                            } else {
+                                base_label
                             };
 
                             let is_selected = self.selected_id == id_info.id;

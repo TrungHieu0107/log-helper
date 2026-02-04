@@ -100,6 +100,13 @@ impl QueryProcessor {
             }
         }
 
+        // Auto-expand the first execution of the first group
+        if let Some(first_group) = result.groups.first_mut() {
+            if let Some(first_exec) = first_group.executions.first_mut() {
+                first_exec.is_expanded = true;
+            }
+        }
+
         // To maintain backward compatibility with UI parts using `result.query`:
         // Populate single `query` field from the LAST execution (most likely what user wants if single view).
         if let Some(last_exec) = result.executions.last() {
@@ -148,7 +155,7 @@ impl QueryProcessor {
             execution_index: 1,
             timestamp: "Last Execution".to_string(), // Placeholder
             dao_file: "".to_string(),
-            is_expanded: false,
+            is_expanded: true,
         };
         
         result.executions.push(exec.clone());
