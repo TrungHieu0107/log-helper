@@ -233,7 +233,16 @@ impl eframe::App for SqlLogParserApp {
                             };
 
                             let is_selected = self.selected_id == id_info.id;
-                            if ui.selectable_label(is_selected, &label).clicked() {
+                            
+                            // Styling for ID Label
+                            let mut text = egui::RichText::new(&label);
+                            if is_selected {
+                                text = text.color(egui::Color32::from_rgb(80, 250, 123)).strong(); // Green
+                            } else {
+                                text = text.color(egui::Color32::from_rgb(248, 248, 242)); // Foreground
+                            }
+
+                            if ui.add(egui::SelectableLabel::new(is_selected, text)).clicked() {
                                 clicked_id = Some(id_info.id.clone());
                             }
                         }
@@ -298,12 +307,12 @@ impl eframe::App for SqlLogParserApp {
                                          .map(|e| if e.dao_file.is_empty() { "Unknown DAO" } else { &e.dao_file })
                                          .unwrap_or("Unknown DAO");
                                      
-                                     // Display DAO Name as a header (non-collapsible)
+                                     // Display DAO Name as a header (Dracula Purple)
                                      ui.add_space(5.0);
-                                     ui.label(egui::RichText::new(dao_name).heading().strong().color(egui::Color32::from_rgb(100, 200, 255)));
+                                     ui.label(egui::RichText::new(dao_name).heading().strong().color(egui::Color32::from_rgb(189, 147, 249))); // Purple
 
                                      // Template Section (Collapsible)
-                                     let template_response = egui::CollapsingHeader::new("Template")
+                                     let template_response = egui::CollapsingHeader::new(egui::RichText::new("Template").color(egui::Color32::from_rgb(139, 233, 253))) // Cyan
                                          .id_source(format!("template_header_{}", g_idx))
                                          .open(Some(group.is_template_expanded))
                                          .show(ui, |ui| {
@@ -344,33 +353,42 @@ impl eframe::App for SqlLogParserApp {
                                                         .id_source(format!("exec_{}", e_idx))
                                                         .open(Some(exec.is_expanded))
                                                         .show(ui, |ui| {
-                                                            // Expanded Content
-                                                            ui.group(|ui| {
-                                                                 ui.horizontal(|ui| {
-                                                                     if ui.button("📋 Copy SQL").clicked() {
-                                                                          let _ = clipboard::copy_to_clipboard(&exec.filled_sql);
-                                                                     }
-                                                                 });
-                                                                 
-                                                                 // Show SQL (Filled or Formatted)
-                                                                 let mut display_sql = if self.config.format_sql {
-                                                                     exec.formatted_sql.clone()
-                                                                 } else {
-                                                                     exec.filled_sql.clone()
-                                                                 };
-                                                                 
-                                                                 ui.add(
-                                                                     egui::TextEdit::multiline(&mut display_sql)
-                                                                         .font(egui::TextStyle::Monospace)
-                                                                         .desired_width(f32::INFINITY)
-                                                                         .interactive(false) 
-                                                                 );
-                                                                 
-                                                                 ui.separator();
-                                                                 ui.label(egui::RichText::new("Parameters:").strong());
-                                                                 let params_text = crate::core::sql_formatter::format_params(&exec.params);
-                                                                 ui.label(params_text);
-                                                             });
+                                                            // Expanded Content (Dracula Card)
+                                                            egui::Frame::none()
+                                                                .fill(egui::Color32::from_rgb(68, 71, 90)) // Current Line
+                                                                .rounding(4.0)
+                                                                .inner_margin(8.0)
+                                                                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(98, 114, 164))) // Comment border
+                                                                .show(ui, |ui| {
+                                                                    ui.horizontal(|ui| {
+                                                                        if ui.button(egui::RichText::new("📋 Copy SQL").color(egui::Color32::from_rgb(80, 250, 123))).clicked() {
+                                                                             let _ = clipboard::copy_to_clipboard(&exec.filled_sql);
+                                                                        }
+                                                                        // Add index info or similar
+                                                                        ui.label(egui::RichText::new(format!("Index: {}", exec.execution_index)).italics().color(egui::Color32::from_rgb(139, 233, 253)));
+                                                                    });
+                                                                    
+                                                                    ui.add_space(5.0);
+                                                                    
+                                                                    // Show SQL (Filled or Formatted)
+                                                                    let mut display_sql = if self.config.format_sql {
+                                                                        exec.formatted_sql.clone()
+                                                                    } else {
+                                                                        exec.filled_sql.clone()
+                                                                    };
+                                                                    
+                                                                    ui.add(
+                                                                        egui::TextEdit::multiline(&mut display_sql)
+                                                                            .font(egui::TextStyle::Monospace)
+                                                                            .desired_width(f32::INFINITY)
+                                                                            .interactive(false) 
+                                                                    );
+                                                                    
+                                                                    ui.separator();
+                                                                    ui.label(egui::RichText::new("Parameters:").strong().color(egui::Color32::from_rgb(255, 121, 198))); // Pink
+                                                                    let params_text = crate::core::sql_formatter::format_params(&exec.params);
+                                                                    ui.label(egui::RichText::new(params_text).monospace());
+                                                                });
                                                         });
                                                      
                                                      if exec_response.header_response.clicked() {
