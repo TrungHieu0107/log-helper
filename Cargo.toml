@@ -25,6 +25,8 @@ rfd = "0.14"
 
 # Encoding detection
 encoding_rs = "0.8"
+sqlformat = "0.2"
+
 
 [profile.release]
 opt-level = "z"

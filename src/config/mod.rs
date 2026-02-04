@@ -37,6 +37,8 @@ pub struct Config {
     pub csv_separator: String,
     #[serde(default = "default_encoding")]
     pub encoding: String,
+    #[serde(default = "default_true")]
+    pub format_sql: bool,
 }
 
 fn default_true() -> bool {
@@ -66,6 +68,7 @@ impl Default for Config {
             active_connection_index: -1,
             csv_separator: ",".to_string(),
             encoding: "SHIFT_JIS".to_string(),
+            format_sql: true,
         }
     }
 }

@@ -32,8 +32,11 @@ pub struct Execution {
     pub dao_file: String,
     pub sql: String,
     pub filled_sql: String,
+    pub formatted_sql: String,
     pub params: Vec<String>,
     pub execution_index: i32,
+    #[serde(skip)]
+    pub is_expanded: bool,
 }
 
 /// Summary information about an ID in the log.
@@ -244,9 +247,11 @@ impl LogParser {
                              timestamp: ts,
                              dao_file: current_dao.clone(),
                              sql: current_sql.clone(),
+                             formatted_sql: sql_formatter::format_sql(&filled_sql),
                              filled_sql,
                              params,
                              execution_index: execution_count,
+                             is_expanded: false,
                          });
                     }
                 }
@@ -270,9 +275,11 @@ impl LogParser {
                  timestamp: current_timestamp,
                  dao_file: current_dao,
                  sql: current_sql.clone(),
+                 formatted_sql: sql_formatter::format_sql(&current_sql),
                  filled_sql: current_sql,
                  params: Vec::new(),
                  execution_index: 1,
+                 is_expanded: false,
              });
         }
 
@@ -331,67 +338,58 @@ impl LogParser {
 
     /// Get the last SQL query from a log file.
     pub fn get_last_query(&self, log_file_path: &str) -> QueryResult {
-        let mut result = QueryResult::default();
+        let mut last_query = QueryResult::default();
 
         if !file_helper::file_exists(log_file_path) {
-            return result;
+            return last_query;
         }
 
         let lines = match read_file_lines(log_file_path, &self.encoding) {
             Ok(iter) => iter,
-            Err(_) => return result,
+            Err(_) => return last_query,
         };
 
+        // State machine approach: track the last ID/SQL seen
         for line in lines {
-             // Match pattern: id=<hex_id> sql=<sql_statement>
+            // Check for ID + SQL (Start of a new execution or same ID different SQL)
             if let Some(caps) = ID_SQL_REGEX.captures(&line) {
-                if let Some(id_match) = caps.get(1) {
-                     // Extract SQL - everything after "sql=" until end of line
+                 if let Some(id_match) = caps.get(1) {
+                    // Extract SQL - everything after "sql=" until end of line
                     if let Some(sql_start) = line.find("sql=") {
                         let sql_part = &line[sql_start + 4..];
                         let sql = sql_part.trim().to_string();
 
                         if !sql.is_empty() {
-                            result.id = id_match.as_str().to_string();
-                            result.sql = sql;
-                            result.params.clear(); // Reset params for new query
+                            // Update last query state
+                            last_query.id = id_match.as_str().to_string();
+                            last_query.sql = sql;
+                            last_query.params.clear(); // Reset params for new query context
                         }
                     }
                 }
-                continue; // Line had sql, so it won't have params typically
+                // Continue to next line (params typically follow)
+                continue; 
             }
 
-            // Match params: id=<hex_id> params=[...]
-            // Only update params if ID matches the last found SQL ID
-            if !result.id.is_empty() {
+            // Check for ID + Params
+            // Only relevant if it matches the current last_query ID
+            if !last_query.id.is_empty() {
                 if let Some(caps) = ID_PARAMS_REGEX.captures(&line) {
                      if let Some(id_match) = caps.get(1) {
-                         if id_match.as_str() == result.id {
-                             if let Some(params_match) = caps.get(1) {
-                                // Re-parse params to get just the bracketed part if regex captured full group?
-                                // ID_PARAMS_REGEX captures id in group 1.
-                                // We need params value.
-                                // Let's check regex in file... `id=([a-f0-9]+)\s+params=`
-                                // It doesn't capture value in current static regex!
-                                // Wait, `get_last_query` original implementation used a local `params_pattern` regex format!
-                                // The global `ID_PARAMS_REGEX` doesn't capture the array.
-                                // We need to extract it manually or use a new regex.
-                                
-                                // Let's simplify: find "params=" and take rest?
-                                if let Some(params_start) = line.find("params=") {
-                                    let params_part = &line[params_start + 7..];
-                                    // Parse array from string...
-                                    // Or use `parse_params_string` on it? `parse_params_string` uses `PARAM_REGEX` which finds `[...]`.
-                                    result.params = self.parse_params_string(params_part);
-                                }
-                             }
+                         // Must match the ID of the last SQL we found
+                         if id_match.as_str() == last_query.id {
+                             if let Some(params_start) = line.find("params=") {
+                                let params_part = &line[params_start + 7..];
+                                // Parse params (assuming bracket format)
+                                last_query.params = self.parse_params_string(params_part);
+                            }
                          }
                      }
                 }
             }
         }
 
-        result
+        last_query
     }
 
     /// Find DAO class name from lines after SQL statement.

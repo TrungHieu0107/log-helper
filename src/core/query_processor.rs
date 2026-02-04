@@ -7,6 +7,18 @@ use crate::core::sql_formatter;
 use crate::utils::clipboard;
 use serde::Serialize;
 
+/// Group of executions sharing the same SQL template.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct QueryGroup {
+    pub template_sql: String,
+    pub formatted_template_sql: String,
+    pub executions: Vec<Execution>,
+    #[serde(skip)]
+    pub is_expanded: bool,
+    #[serde(skip)]
+    pub is_template_expanded: bool,
+}
+
 /// Result of processing a query.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct ProcessResult {
@@ -14,6 +26,9 @@ pub struct ProcessResult {
     pub query: QueryResult,
     /// All executions found for the ID
     pub executions: Vec<Execution>,
+    /// Grouped executions
+    pub groups: Vec<QueryGroup>,
+    
     pub filled_sql: String,
     pub formatted_sql: String,
     pub formatted_params: String,
@@ -58,12 +73,31 @@ impl QueryProcessor {
         result.executions = self.parser.parse_log_file_advanced(log_file_path, target_id);
 
         if result.executions.is_empty() {
-             // Fallback to basic parsing ? Or just report not found.
-             // If advanced found nothing, basic likely won't either unless regex differs.
-             // But let's check basic just in case or trust advanced.
-             // Advanced uses same regexes...
              result.error = Some(format!("ID not found: {}", target_id));
              return result;
+        }
+
+        // Grouping Logic
+        // We preserve order of appearance of templates.
+        for exec in &result.executions {
+            let mut group_found = false;
+            for group in &mut result.groups {
+                if group.template_sql == exec.sql {
+                    group.executions.push(exec.clone());
+                    group_found = true;
+                    break;
+                }
+            }
+            
+            if !group_found {
+                 result.groups.push(QueryGroup {
+                     template_sql: exec.sql.clone(),
+                     formatted_template_sql: sql_formatter::format_sql(&exec.sql),
+                     executions: vec![exec.clone()],
+                     is_expanded: false,
+                     is_template_expanded: false,
+                 });
+            }
         }
 
         // To maintain backward compatibility with UI parts using `result.query`:
@@ -101,6 +135,30 @@ impl QueryProcessor {
         result.formatted_sql = sql_formatter::format_sql(&result.query.sql);
         result.formatted_params = sql_formatter::format_params(&result.query.params);
         result.filled_sql = self.get_filled_query(&result.query);
+
+        // Synthesize a group for UI consistency
+        // Note: Execution struct requires timestamp etc which we don't have fully in QueryResult
+        // But we can create a minimal one.
+        let exec = Execution {
+            id: result.query.id.clone(),
+            sql: result.query.sql.clone(),
+            params: result.query.params.clone(),
+            filled_sql: result.filled_sql.clone(),
+            formatted_sql: result.formatted_sql.clone(),
+            execution_index: 1,
+            timestamp: "Last Execution".to_string(), // Placeholder
+            dao_file: "".to_string(),
+            is_expanded: false,
+        };
+        
+        result.executions.push(exec.clone());
+        result.groups.push(QueryGroup {
+            template_sql: exec.sql.clone(),
+            formatted_template_sql: exec.formatted_sql.clone(),
+            executions: vec![exec],
+            is_expanded: false,
+            is_template_expanded: false,
+        });
 
         if auto_copy && !result.filled_sql.is_empty() {
             result.copied_to_clipboard = clipboard::copy_to_clipboard(&result.filled_sql);

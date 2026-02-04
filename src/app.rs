@@ -178,6 +178,12 @@ impl eframe::App for SqlLogParserApp {
                 if ui.checkbox(&mut self.config.auto_copy, "Auto Copy").changed() {
                     let _ = self.config_manager.save(&self.config);
                 }
+                
+                ui.separator();
+
+                if ui.checkbox(&mut self.config.format_sql, "Format SQL").changed() {
+                    let _ = self.config_manager.save(&self.config);
+                }
             });
         });
 
@@ -211,6 +217,7 @@ impl eframe::App for SqlLogParserApp {
 
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
+                        let mut clicked_id = None;
                         for id_info in &self.ids {
                             let label = if id_info.params_count > 0 {
                                 format!("{} ({})", id_info.id, id_info.params_count)
@@ -220,9 +227,15 @@ impl eframe::App for SqlLogParserApp {
 
                             let is_selected = self.selected_id == id_info.id;
                             if ui.selectable_label(is_selected, &label).clicked() {
-                                self.selected_id = id_info.id.clone();
-                                self.search_input = id_info.id.clone();
+                                clicked_id = Some(id_info.id.clone());
                             }
+                        }
+                        
+                        // Handle click outside the loop to avoid mutable borrow conflict
+                        if let Some(id) = clicked_id {
+                            self.selected_id = id.clone();
+                            self.search_input = id;
+                            self.search();
                         }
                     });
                 });
@@ -256,71 +269,116 @@ impl eframe::App for SqlLogParserApp {
             ui.add_space(20.0);
 
             // Result section
-            if let Some(ref result) = self.result {
+            if let Some(ref mut result) = self.result {
                 ui.group(|ui| {
                      ui.set_min_height(300.0);
                      
                     if let Some(ref error) = result.error {
                         ui.colored_label(egui::Color32::RED, error);
-                    } else if !result.executions.is_empty() {
+                    } else if !result.groups.is_empty() {
                          egui::ScrollArea::vertical()
                             .id_source("executions_list")
                             .max_height(f32::INFINITY)
                             .show(ui, |ui| {
-                             let mut current_sql = String::new();
                              
-                             for (index, exec) in result.executions.iter().enumerate() {
-                                 // Header for new SQL Template (Group valid executions by template)
-                                 // Simple grouping: if SQL text changes, show new header.
-                                 if exec.sql != current_sql {
-                                     current_sql = exec.sql.clone();
-                                     if index > 0 { ui.separator(); }
+                             let single_group = result.groups.len() == 1;
+
+                             // Iterate over groups
+                             for (g_idx, group) in result.groups.iter_mut().enumerate() {
+                                 ui.push_id(g_idx, |ui| {
+                                     // Get DAO name from first execution or fallback
+                                     let dao_name = group.executions.first()
+                                         .map(|e| if e.dao_file.is_empty() { "Unknown DAO" } else { &e.dao_file })
+                                         .unwrap_or("Unknown DAO");
                                      
+                                     // Display DAO Name as a header (non-collapsible)
                                      ui.add_space(5.0);
-                                     ui.heading("SQL Template");
-                                     
-                                     // Format SQL for display
-                                     let formatted_template = crate::core::sql_formatter::format_sql(&current_sql);
-                                     ui.add(
-                                        egui::TextEdit::multiline(&mut formatted_template.as_str())
-                                            .font(egui::TextStyle::Monospace)
-                                            .desired_width(f32::INFINITY)
-                                            .code_editor()
-                                            .interactive(false)
-                                    );
-                                    ui.add_space(5.0);
-                                    ui.label(egui::RichText::new("Executions:").strong());
-                                 }
-                                 
-                                 ui.push_id(index, |ui| {
-                                     ui.group(|ui| {
-                                         ui.horizontal(|ui| {
-                                             ui.label(egui::RichText::new(format!("#{} {}", exec.execution_index, exec.timestamp)).strong());
-                                             if ui.button("📋 Copy").on_hover_text("Copy this specific execution").clicked() {
-                                                  let _ = clipboard::copy_to_clipboard(&exec.filled_sql);
-                                             }
-                                         });
-                                         
-                                         // Show filled SQL
-                                         let mut filled_sql_text = exec.filled_sql.clone();
-                                         let response = ui.add(
-                                             egui::TextEdit::multiline(&mut filled_sql_text)
-                                                 .font(egui::TextStyle::Monospace)
-                                                 .desired_width(f32::INFINITY)
-                                                 .interactive(false) 
-                                         );
-                                                   
-                                         if response.hovered() {
-                                             let params_text = crate::core::sql_formatter::format_params(&exec.params);
-                                             egui::show_tooltip(ui.ctx(), response.id, |ui| {
-                                                 ui.label(params_text);
+                                     ui.label(egui::RichText::new(dao_name).heading().strong().color(egui::Color32::from_rgb(100, 200, 255)));
+
+                                     // Template Section (Collapsible)
+                                     let template_response = egui::CollapsingHeader::new("Template")
+                                         .id_source(format!("template_header_{}", g_idx))
+                                         .open(Some(group.is_template_expanded))
+                                         .show(ui, |ui| {
+                                             ui.horizontal(|ui| {
+                                                 if ui.button("📋 Copy Template").on_hover_text("Copy to clipboard").clicked() {
+                                                     let _ = clipboard::copy_to_clipboard(&group.template_sql);
+                                                 }
                                              });
-                                         }
-                                     });
-                                 });
+                                             
+                                             let mut template_display = group.formatted_template_sql.clone();
+                                             ui.add(
+                                                 egui::TextEdit::multiline(&mut template_display)
+                                                     .font(egui::TextStyle::Monospace)
+                                                     .desired_width(f32::INFINITY)
+                                                     .interactive(false)
+                                             );
+                                         });
+                                     
+                                     // Handle toggle manually
+                                     if template_response.header_response.clicked() {
+                                         group.is_template_expanded = !group.is_template_expanded;
+                                     }
+                                     
+                                     ui.separator();
+                                     
+                                     // List executions in this group
+                                     for (e_idx, exec) in group.executions.iter_mut().enumerate() {
+                                                 ui.push_id(e_idx, |ui| {
+                                                     // Execution Header (Summary)
+                                                     let summary_text = format!(
+                                                         "#{} {} - {}", 
+                                                         exec.execution_index, 
+                                                         exec.timestamp,
+                                                         exec.filled_sql.lines().next().unwrap_or("").chars().take(50).collect::<String>()
+                                                     );
+                                                     
+                                                     let exec_response = egui::CollapsingHeader::new(summary_text)
+                                                        .id_source(format!("exec_{}", e_idx))
+                                                        .open(Some(exec.is_expanded))
+                                                        .show(ui, |ui| {
+                                                            // Expanded Content
+                                                            ui.group(|ui| {
+                                                                 ui.horizontal(|ui| {
+                                                                     if ui.button("📋 Copy SQL").clicked() {
+                                                                          let _ = clipboard::copy_to_clipboard(&exec.filled_sql);
+                                                                     }
+                                                                 });
+                                                                 
+                                                                 // Show SQL (Filled or Formatted)
+                                                                 let mut display_sql = if self.config.format_sql {
+                                                                     exec.formatted_sql.clone()
+                                                                 } else {
+                                                                     exec.filled_sql.clone()
+                                                                 };
+                                                                 
+                                                                 ui.add(
+                                                                     egui::TextEdit::multiline(&mut display_sql)
+                                                                         .font(egui::TextStyle::Monospace)
+                                                                         .desired_width(f32::INFINITY)
+                                                                         .interactive(false) 
+                                                                 );
+                                                                 
+                                                                 ui.separator();
+                                                                 ui.label(egui::RichText::new("Parameters:").strong());
+                                                                 let params_text = crate::core::sql_formatter::format_params(&exec.params);
+                                                                 ui.label(params_text);
+                                                             });
+                                                        });
+                                                     
+                                                     if exec_response.header_response.clicked() {
+                                                         exec.is_expanded = !exec.is_expanded;
+                                                     }
+                                                 });
+                                                 // Tiny space between items
+                                                 ui.add_space(2.0);
+                                            }
+                                        });
                                  ui.add_space(5.0);
                              }
                          });
+                    } else if !result.executions.is_empty() {
+                         ui.label("No groups found (fallback).");
                     } else {
                         ui.label("No executions found.");
                     }
