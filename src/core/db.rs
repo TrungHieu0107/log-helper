@@ -158,49 +158,35 @@ pub struct QueryResult {
     pub execution_time_ms: u128,
 }
 
-pub struct DbClient {
-    // We could hold a pool here, but for now we'll connect on demand
-    // to keep it simple, or keep the last successful pool active.
+#[async_trait::async_trait]
+pub trait DatabaseExecutor {
+    async fn execute(&self, config: &DbConfig, sql: &str) -> anyhow::Result<QueryResult>;
 }
 
-impl DbClient {
-    pub fn new() -> Self {
-        Self {}
-    }
+pub struct SqlxExecutor;
 
-    pub async fn execute_query(&self, config: &DbConfig, sql: &str) -> anyhow::Result<QueryResult> {
-        if config.db_type == DbType::SqlServer {
-            return self.execute_mssql(config, sql).await;
-        }
-
+#[async_trait::async_trait]
+impl DatabaseExecutor for SqlxExecutor {
+    async fn execute(&self, config: &DbConfig, sql: &str) -> anyhow::Result<QueryResult> {
         use sqlx::any::{AnyConnectOptions, AnyPoolOptions};
         use sqlx::{Column, Row, ValueRef};
         use std::str::FromStr;
         use std::time::Instant;
 
         let start = Instant::now();
-        
-        // Convert JDBC URL to sqlx format if necessary (only for non-MSSQL if they were JDBC)
-        let connection_url = if config.db_type == DbType::SqlServer {
-            convert_jdbc_to_sqlx(&config.url, &config.user, &config.password)
-        } else {
-            config.url.clone()
-        };
+        let connection_url = config.url.clone();
 
-        // Convert connection_url to sqlx options
         let opts = AnyConnectOptions::from_str(&connection_url)?;
-        
+
         let pool = AnyPoolOptions::new()
             .max_connections(1)
             .connect_with(opts)
             .await?;
 
-        // Support multiple queries or just one? Usually one.
-        // We'll use fetch_all for results and execute for non-SELECT.
-        let is_select = sql.trim().to_lowercase().starts_with("select") 
-                     || sql.trim().to_lowercase().starts_with("with")
-                     || sql.trim().to_lowercase().starts_with("show")
-                     || sql.trim().to_lowercase().starts_with("describe");
+        let is_select = sql.trim().to_lowercase().starts_with("select")
+            || sql.trim().to_lowercase().starts_with("with")
+            || sql.trim().to_lowercase().starts_with("show")
+            || sql.trim().to_lowercase().starts_with("describe");
 
         let mut result = QueryResult {
             columns: Vec::new(),
@@ -213,7 +199,7 @@ impl DbClient {
             let rows = sqlx::query(sql)
                 .fetch_all(&pool)
                 .await?;
-            
+
             if let Some(first_row) = rows.first() {
                 result.columns = first_row.columns().iter().map(|c| c.name().to_string()).collect();
             }
@@ -223,12 +209,12 @@ impl DbClient {
                 for i in 0..result.columns.len() {
                     let val: String = match row.try_get_raw(i) {
                         Ok(value) => {
-                             if value.is_null() {
-                                 "NULL".to_string()
-                             } else {
-                                 format!("{:?}", value) // Fallback to debug
-                             }
-                        },
+                            if value.is_null() {
+                                "NULL".to_string()
+                            } else {
+                                format!("{:?}", value)
+                            }
+                        }
                         Err(_) => "ERR".to_string(),
                     };
                     row_data.push(val);
@@ -245,21 +231,25 @@ impl DbClient {
         result.execution_time_ms = start.elapsed().as_millis();
         Ok(result)
     }
+}
 
-    async fn execute_mssql(&self, config: &DbConfig, sql: &str) -> anyhow::Result<QueryResult> {
-        use tiberius::{Client, Config, AuthMethod};
-        use tokio::net::TcpStream;
-        use tokio_util::compat::TokioAsyncWriteCompatExt;
+pub struct MssqlExecutor;
+
+#[async_trait::async_trait]
+impl DatabaseExecutor for MssqlExecutor {
+    async fn execute(&self, config: &DbConfig, sql: &str) -> anyhow::Result<QueryResult> {
         use futures_util::stream::StreamExt;
         use std::time::Instant;
+        use tiberius::{AuthMethod, Client, Config};
+        use tokio::net::TcpStream;
+        use tokio_util::compat::TokioAsyncWriteCompatExt;
 
         let start = Instant::now();
-        
-        // Parse JDBC URL: jdbc:sqlserver://host:port;databaseName=DBNAME;encrypt=true;trustServerCertificate=true
+
         let url = config.url.trim_start_matches("jdbc:sqlserver://");
         let parts: Vec<&str> = url.splitn(2, ';').collect();
         let addr_parts: Vec<&str> = parts[0].split(':').collect();
-        
+
         let host = addr_parts[0];
         let port: u16 = if addr_parts.len() > 1 {
             addr_parts[1].parse().unwrap_or(1433)
@@ -271,18 +261,30 @@ impl DbClient {
         t_config.host(host);
         t_config.port(port);
         t_config.authentication(AuthMethod::sql_server(&config.user, &config.password));
-        
+
         if parts.len() > 1 {
             for param in parts[1].split(';') {
-                if param.is_empty() { continue; }
+                if param.is_empty() {
+                    continue;
+                }
                 let kv: Vec<&str> = param.splitn(2, '=').collect();
                 if kv.len() == 2 {
                     let key = kv[0].to_lowercase();
                     let val = kv[1];
                     match key.as_str() {
-                        "databasename" => { t_config.database(val); },
-                        "encrypt" => { if val == "true" { t_config.encryption(tiberius::EncryptionLevel::Required); } },
-                        "trustservercertificate" => { if val == "true" { t_config.trust_cert(); } },
+                        "databasename" => {
+                            t_config.database(val);
+                        }
+                        "encrypt" => {
+                            if val == "true" {
+                                t_config.encryption(tiberius::EncryptionLevel::Required);
+                            }
+                        }
+                        "trustservercertificate" => {
+                            if val == "true" {
+                                t_config.trust_cert();
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -302,8 +304,7 @@ impl DbClient {
         };
 
         let mut stream = client.query(sql, &[]).await?;
-        
-        // Get columns from the first result set
+
         if let Some(columns) = stream.columns().await? {
             result.columns = columns.iter().map(|c| c.name().to_string()).collect();
         }
@@ -324,29 +325,45 @@ impl DbClient {
                         } else if let Ok(Some(b)) = row.try_get::<bool, _>(i) {
                             b.to_string()
                         } else {
-                            // Fallback for NULL or unhandled types (like dates)
                             "NULL/Unsupported".to_string()
                         };
                         row_data.push(val);
                     }
                     result.rows.push(row_data);
-                },
+                }
                 tiberius::QueryItem::Metadata(_) => {}
             }
         }
-        
-        // Drop the stream explicitly to release mutable borrow on client
+
         drop(stream);
-        
-        // To get affected rows for UPDATE/INSERT, we might need to use client.execute
-        // but let's try to get it from the stream if possible, or use a separate branch
+
         if result.rows.is_empty() && result.columns.is_empty() {
-            // Re-run as execute if no rows found and it's likely a DML
-             let counts = client.execute(sql, &[]).await?;
-             result.affected_rows = counts.total();
+            let counts = client.execute(sql, &[]).await?;
+            result.affected_rows = counts.total();
         }
 
         result.execution_time_ms = start.elapsed().as_millis();
         Ok(result)
+    }
+}
+
+pub struct DbClient {
+    sqlx_executor: SqlxExecutor,
+    mssql_executor: MssqlExecutor,
+}
+
+impl DbClient {
+    pub fn new() -> Self {
+        Self {
+            sqlx_executor: SqlxExecutor,
+            mssql_executor: MssqlExecutor,
+        }
+    }
+
+    pub async fn execute_query(&self, config: &DbConfig, sql: &str) -> anyhow::Result<QueryResult> {
+        if config.db_type == DbType::SqlServer {
+            return self.mssql_executor.execute(config, sql).await;
+        }
+        self.sqlx_executor.execute(config, sql).await
     }
 }

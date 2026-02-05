@@ -39,6 +39,7 @@ tokio = { version = "1", features = ["full"] }
 tiberius = { version = "0.12", features = ["tds73", "chrono"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 futures-util = "0.3"
+async-trait = "0.1"
 
 
 [profile.release]
