@@ -74,6 +74,110 @@ pub fn convert_jdbc_to_sqlx(jdbc_url: &str, user: &str, pass: &str) -> String {
     sqlx_url
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ParsedSqlServerUrl {
+    pub host: String,
+    pub port: u16,
+    pub instance: Option<String>,
+    pub database: Option<String>,
+    pub encrypt: bool,
+    pub trust_cert: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConnectionFields {
+    pub host: String,
+    pub port: String, // String for UI input
+    pub database: String,
+    pub encrypt: bool,
+    pub trust_cert: bool,
+}
+
+impl Default for ConnectionFields {
+    fn default() -> Self {
+        Self {
+            host: "localhost".to_string(),
+            port: "1433".to_string(),
+            database: "master".to_string(),
+            encrypt: false,
+            trust_cert: true,
+        }
+    }
+}
+
+pub fn parse_jdbc_url(url: &str) -> Result<ParsedSqlServerUrl, String> {
+    if !url.starts_with("jdbc:sqlserver://") {
+        return Err("Invalid JDBC URL prefix. Must start with 'jdbc:sqlserver://'".to_string());
+    }
+
+    let stripped = url.trim_start_matches("jdbc:sqlserver://");
+    let (server_part, params_part) = match stripped.split_once(';') {
+        Some((s, p)) => (s, Some(p)),
+        None => (stripped, None),
+    };
+
+    let mut parsed = ParsedSqlServerUrl {
+        host: String::new(),
+        port: 1433,
+        instance: None,
+        database: None,
+        encrypt: false,
+        trust_cert: false,
+    };
+
+    // Parse server part
+    if let Some((h, p)) = server_part.split_once(':') {
+        parsed.host = h.to_string();
+        parsed.port = p.parse().unwrap_or(1433);
+    } else if let Some((h, i)) = server_part.split_once('\\') {
+        parsed.host = h.to_string();
+        parsed.instance = Some(i.to_string());
+        parsed.port = 1433; // Default for instance mostly, or dynamic
+    } else {
+        parsed.host = server_part.to_string();
+    }
+
+    // Parse params
+    if let Some(params) = params_part {
+        for param in params.split(';') {
+            if param.is_empty() { continue; }
+            let kv: Vec<&str> = param.splitn(2, '=').collect();
+            if kv.len() == 2 {
+                let key = kv[0].trim().to_lowercase();
+                let val = kv[1].trim();
+                
+                match key.as_str() {
+                    "databasename" | "database" => parsed.database = Some(val.to_string()),
+                    "encrypt" => parsed.encrypt = val == "true",
+                    "trustservercertificate" => parsed.trust_cert = val == "true",
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    Ok(parsed)
+}
+
+pub fn build_jdbc_url(fields: &ConnectionFields) -> String {
+    let mut url = format!("jdbc:sqlserver://{}:{}", fields.host, fields.port);
+    
+    if !fields.database.is_empty() {
+        url.push_str(&format!(";databaseName={}", fields.database));
+    }
+    
+    if fields.encrypt {
+        url.push_str(";encrypt=true");
+    }
+    
+    if fields.trust_cert {
+        url.push_str(";trustServerCertificate=true");
+    }
+    
+    url
+}
+
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DbConfig {
     pub id: String, // UUID usually
@@ -128,25 +232,36 @@ impl ConnectionManager {
 
     pub fn save(&self) -> anyhow::Result<()> {
         let content = serde_json::to_string_pretty(&self.connections)?;
-        fs::write(&self.config_path, content)?;
+        fs::write(&self.config_path, content).map_err(|e| anyhow::anyhow!("Failed to write config file: {}", e))?;
+        println!("Saved connections to {:?}", self.config_path);
         Ok(())
     }
 
-    pub fn add(&mut self, config: DbConfig) {
+    pub fn add(&mut self, config: DbConfig) -> anyhow::Result<()> {
+        if self.connections.iter().any(|c| c.name == config.name) {
+             return Err(anyhow::anyhow!("A connection with name '{}' already exists", config.name));
+        }
         self.connections.push(config);
-        let _ = self.save();
+        self.save()
     }
     
-    pub fn update(&mut self, config: DbConfig) {
+    pub fn update(&mut self, config: DbConfig) -> anyhow::Result<()> {
         if let Some(pos) = self.connections.iter().position(|c| c.id == config.id) {
             self.connections[pos] = config;
-            let _ = self.save();
+            self.save()
+        } else {
+             Err(anyhow::anyhow!("Connection not found for update"))
         }
     }
 
-    pub fn delete(&mut self, id: &str) {
+    pub fn delete(&mut self, id: &str) -> anyhow::Result<()> {
+        let prev_len = self.connections.len();
         self.connections.retain(|c| c.id != id);
-        let _ = self.save();
+        if self.connections.len() != prev_len {
+             self.save()
+        } else {
+             Ok(()) 
+        }
     }
 }
 
@@ -164,6 +279,44 @@ pub trait DatabaseExecutor {
 }
 
 pub struct SqlxExecutor;
+
+    pub async fn test_connection(&self, config: &DbConfig) -> anyhow::Result<()> {
+        if config.db_type == DbType::SqlServer {
+             // For SQL Server, we try to connect and run a simple query
+             let res = self.execute_mssql(config, "SELECT 1").await?;
+             // executing successful implies connection worked
+             return Ok(());
+        }
+        
+        // For others, use sqlx to test
+        use sqlx::any::AnyConnectOptions;
+        use std::str::FromStr;
+        
+        let connection_url = if config.db_type == DbType::SqlServer {
+            convert_jdbc_to_sqlx(&config.url, &config.user, &config.password)
+        } else {
+            config.url.clone()
+        };
+        
+        // Convert connection_url to sqlx options
+        let opts = AnyConnectOptions::from_str(&connection_url)?;
+        
+        use sqlx::any::AnyPoolOptions;
+        let pool = AnyPoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await?;
+            
+        // Test query
+        let _ = sqlx::query("SELECT 1").execute(&pool).await?;
+        
+        Ok(())
+    }
+
+    pub async fn execute_query(&self, config: &DbConfig, sql: &str) -> anyhow::Result<QueryResult> {
+        if config.db_type == DbType::SqlServer {
+            return self.execute_mssql(config, sql).await;
+        }
 
 #[async_trait::async_trait]
 impl DatabaseExecutor for SqlxExecutor {
@@ -245,6 +398,10 @@ impl DatabaseExecutor for MssqlExecutor {
         use tokio_util::compat::TokioAsyncWriteCompatExt;
 
         let start = Instant::now();
+        
+        let parsed = parse_jdbc_url(&config.url)
+            .map_err(|e| anyhow::anyhow!("Failed to parse JDBC URL: {}", e))?;
+        
 
         let url = config.url.trim_start_matches("jdbc:sqlserver://");
         let parts: Vec<&str> = url.splitn(2, ';').collect();
@@ -258,9 +415,12 @@ impl DatabaseExecutor for MssqlExecutor {
         };
 
         let mut t_config = Config::new();
-        t_config.host(host);
-        t_config.port(port);
+        t_config.host(&parsed.host);
+        t_config.port(parsed.port);
         t_config.authentication(AuthMethod::sql_server(&config.user, &config.password));
+        
+        if let Some(inst) = parsed.instance {
+            t_config.instance_name(inst);
 
         if parts.len() > 1 {
             for param in parts[1].split(';') {
@@ -290,11 +450,25 @@ impl DatabaseExecutor for MssqlExecutor {
                 }
             }
         }
+        
+        if let Some(db) = parsed.database {
+            t_config.database(db);
+        }
 
-        let tcp = TcpStream::connect(t_config.get_addr()).await?;
+        if parsed.encrypt {
+             t_config.encryption(tiberius::EncryptionLevel::Required);
+        } else {
+             t_config.encryption(tiberius::EncryptionLevel::NotSupported);
+        }
+        
+        if parsed.trust_cert {
+            t_config.trust_cert();
+        }
+
+        let tcp = TcpStream::connect(t_config.get_addr()).await.map_err(|e| anyhow::anyhow!("Failed to connect to {}:{} - {}", parsed.host, parsed.port, e))?;
         tcp.set_nodelay(true)?;
 
-        let mut client = Client::connect(t_config, tcp.compat_write()).await?;
+        let mut client = Client::connect(t_config, tcp.compat_write()).await.map_err(|e| anyhow::anyhow!("Login failed: {}", e))?;
 
         let mut result = QueryResult {
             columns: Vec::new(),
@@ -303,6 +477,9 @@ impl DatabaseExecutor for MssqlExecutor {
             execution_time_ms: 0,
         };
 
+        let mut stream = client.query(sql, &[]).await.map_err(|e| anyhow::anyhow!("Query execution failed: {}", e))?;
+        
+        // Get columns from the first result set
         let mut stream = client.query(sql, &[]).await?;
 
         if let Some(columns) = stream.columns().await? {
@@ -324,7 +501,11 @@ impl DatabaseExecutor for MssqlExecutor {
                             f.to_string()
                         } else if let Ok(Some(b)) = row.try_get::<bool, _>(i) {
                             b.to_string()
+                        } else if let Ok(Some(u)) = row.try_get::<uuid::Uuid, _>(i) {
+                            u.to_string()
                         } else {
+                            // Try naive date/time? For now fallback.
+                             "NULL/Other".to_string()
                             "NULL/Unsupported".to_string()
                         };
                         row_data.push(val);
@@ -338,12 +519,70 @@ impl DatabaseExecutor for MssqlExecutor {
         drop(stream);
 
         if result.rows.is_empty() && result.columns.is_empty() {
+             let counts = client.execute(sql, &[]).await?;
+             result.affected_rows = counts.total();
             let counts = client.execute(sql, &[]).await?;
             result.affected_rows = counts.total();
         }
 
         result.execution_time_ms = start.elapsed().as_millis();
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_jdbc_url_simple() {
+        let url = "jdbc:sqlserver://localhost:1433;databaseName=testdb";
+        let parsed = parse_jdbc_url(url).unwrap();
+        
+        assert_eq!(parsed.host, "localhost");
+        assert_eq!(parsed.port, 1433);
+        assert_eq!(parsed.database, Some("testdb".to_string()));
+        assert_eq!(parsed.encrypt, false);
+        assert_eq!(parsed.trust_cert, false);
+    }
+
+    #[test]
+    fn test_parse_jdbc_url_full() {
+        let url = "jdbc:sqlserver://myserver.com:5555;database=prod;encrypt=true;trustServerCertificate=true";
+        let parsed = parse_jdbc_url(url).unwrap();
+        
+        assert_eq!(parsed.host, "myserver.com");
+        assert_eq!(parsed.port, 5555);
+        assert_eq!(parsed.database, Some("prod".to_string()));
+        assert_eq!(parsed.encrypt, true);
+        assert_eq!(parsed.trust_cert, true);
+    }
+
+    #[test]
+    fn test_parse_jdbc_url_instance() {
+        let url = "jdbc:sqlserver://myserver\\SQLEXPRESS;databaseName=test";
+        let parsed = parse_jdbc_url(url).unwrap();
+        
+        assert_eq!(parsed.host, "myserver");
+        assert_eq!(parsed.instance, Some("SQLEXPRESS".to_string()));
+        assert_eq!(parsed.database, Some("test".to_string()));
+    }
+    
+    #[test]
+    fn test_build_jdbc_url() {
+        let fields = ConnectionFields {
+            host: "10.0.0.1".to_string(),
+            port: "1433".to_string(),
+            database: "master".to_string(),
+            encrypt: true,
+            trust_cert: true,
+        };
+        
+        let url = build_jdbc_url(&fields);
+        assert!(url.starts_with("jdbc:sqlserver://10.0.0.1:1433"));
+        assert!(url.contains("databaseName=master"));
+        assert!(url.contains("encrypt=true"));
+        assert!(url.contains("trustServerCertificate=true"));
     }
 }
 

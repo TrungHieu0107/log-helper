@@ -47,11 +47,27 @@ pub struct SqlLogParserApp {
     query_sender: std::sync::mpsc::Sender<anyhow::Result<QueryResult>>,
     query_receiver: std::sync::mpsc::Receiver<anyhow::Result<QueryResult>>,
     
+    test_sender: std::sync::mpsc::Sender<anyhow::Result<()>>,
+    test_receiver: std::sync::mpsc::Receiver<anyhow::Result<()>>,
+    
     // Connection Editing
     show_connection_modal: bool,
     editing_connection: DbConfig,
+    is_new_connection: bool, // true = add new, false = edit existing
+    test_conn_status: Option<anyhow::Result<String>>,
+    is_testing_conn: bool,
+    is_saving: bool,
+
+    editing_mode: ConnectionEditMode,
+    editing_fields: crate::core::db::ConnectionFields,
     
     status: String,
+}
+
+#[derive(PartialEq)]
+enum ConnectionEditMode {
+    Url,
+    Fields,
 }
 
 impl SqlLogParserApp {
@@ -60,6 +76,7 @@ impl SqlLogParserApp {
         let config = config_manager.load();
 
         let (query_sender, query_receiver) = std::sync::mpsc::channel();
+        let (test_sender, test_receiver) = std::sync::mpsc::channel();
 
         let mut app = Self {
             config_manager,
@@ -83,9 +100,18 @@ impl SqlLogParserApp {
             
             query_sender,
             query_receiver,
+            test_sender,
+            test_receiver,
             
             show_connection_modal: false,
             editing_connection: DbConfig::default(),
+            is_new_connection: false,
+            test_conn_status: None,
+            is_testing_conn: false,
+            is_saving: false,
+
+            editing_mode: ConnectionEditMode::Url,
+            editing_fields: crate::core::db::ConnectionFields::default(),
             
             status: "Ready".to_string(),
         };
@@ -385,8 +411,15 @@ impl SqlLogParserApp {
     fn sidebar_executor(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
         ui.heading("Connections");
         if ui.button("➕ New Connection").clicked() {
+            println!("New Connection button clicked");
             self.editing_connection = DbConfig::default();
             self.editing_connection.id = Uuid::new_v4().to_string();
+            self.is_new_connection = true; // Mark as new
+            // Default fields
+            self.editing_fields = crate::core::db::ConnectionFields::default();
+            self.editing_mode = ConnectionEditMode::Url; // Default start
+            self.test_conn_status = None; // Clear any previous status
+
             self.show_connection_modal = true;
         }
         ui.separator();
@@ -411,7 +444,26 @@ impl SqlLogParserApp {
         });
         
         if let Some(conn) = edit_conn {
+            println!("Edit connection clicked: name='{}', id='{}'", conn.name, conn.id);
             self.editing_connection = conn;
+            self.is_new_connection = false; // Mark as edit (not new)
+            // Parse existing URL to fields if possible
+            if let Ok(parsed) = crate::core::db::parse_jdbc_url(&self.editing_connection.url) {
+                 self.editing_fields = crate::core::db::ConnectionFields {
+                     host: parsed.host,
+                     port: parsed.port.to_string(),
+                     database: parsed.database.unwrap_or_default(),
+                     encrypt: parsed.encrypt,
+                     trust_cert: parsed.trust_cert,
+                 };
+            } else {
+                // Fallback / Reset
+                self.editing_fields = crate::core::db::ConnectionFields::default();
+            }
+            // Maybe allow preference?
+            self.editing_mode = ConnectionEditMode::Url;
+            self.test_conn_status = None; // Clear any previous status
+
             self.show_connection_modal = true;
         }
         
@@ -423,66 +475,317 @@ impl SqlLogParserApp {
     }
     
     fn connection_edit_modal(&mut self, ctx: &egui::Context) {
+        // NOTE: Test result polling is done at the end of this function
+        // to properly handle both test-only and save flows.
+
         if self.show_connection_modal {
             let mut is_open = true;
             let mut save_triggered = false;
             let mut cancel_triggered = false;
+            let mut test_triggered = false;
+            
+            // Sync state when modal opens logic is handled by caller setting the struct, 
+            // but we need to ensure fields <-> url sync on first load? 
+            // Ideally we do this when 'New Connection' or 'Edit' is clicked.
+            // For now, let's assume `editing_connection` has the source of truth initially.
 
             egui::Window::new("Connection Details")
                 .open(&mut is_open)
                 .collapsible(false)
-                .resizable(false)
+                .resizable(true)
+                .min_width(500.0)
                 .show(ctx, |ui| {
-                    egui::Grid::new("connection_grid").num_columns(2).spacing([10.0, 10.0]).show(ui, |ui| {
+                    let mut changed = false;
+                    
+                    // Top: Common Fields
+                    egui::Grid::new("common_conn_fields").num_columns(2).spacing([10.0, 10.0]).show(ui, |ui| {
                         ui.label("Name:");
-                        ui.text_edit_singleline(&mut self.editing_connection.name);
+                        if ui.text_edit_singleline(&mut self.editing_connection.name).changed() { changed = true; }
                         ui.end_row();
 
                         ui.label("Type:");
                         egui::ComboBox::from_id_source("db_type")
                             .selected_text(self.editing_connection.db_type.to_string())
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut self.editing_connection.db_type, DbType::SqlServer, "SQL Server");
+                                if ui.selectable_value(&mut self.editing_connection.db_type, DbType::SqlServer, "SQL Server").changed() { changed = true; }
+                                // Disable others or handle them simply? Request asked for SQL Server specifics.
+                                // Let's keep others available but maybe they don't use the advanced mode logic yet.
                                 ui.selectable_value(&mut self.editing_connection.db_type, DbType::Postgres, "Postgres");
                                 ui.selectable_value(&mut self.editing_connection.db_type, DbType::Mysql, "MySQL");
                                 ui.selectable_value(&mut self.editing_connection.db_type, DbType::Sqlite, "SQLite");
                             });
                         ui.end_row();
-
-                        ui.label("JDBC URL:");
-                        ui.text_edit_singleline(&mut self.editing_connection.url).on_hover_text("Example: jdbc:sqlserver://host:port;databaseName=DBNAME");
-                        ui.end_row();
-
-                        ui.label("User:");
-                        ui.text_edit_singleline(&mut self.editing_connection.user);
-                        ui.end_row();
-
-                        ui.label("Password:");
-                        ui.add(egui::TextEdit::singleline(&mut self.editing_connection.password).password(true));
-                        ui.end_row();
                     });
 
+                    ui.separator();
+                    
+                    if self.editing_connection.db_type == DbType::SqlServer {
+                        // Mode Switcher
+                         ui.horizontal(|ui| {
+                            ui.label("Input Mode:");
+                            if ui.radio_value(&mut self.editing_mode, ConnectionEditMode::Url, "URL").changed() {
+                                // Sync Fields from URL when switching TO Fields? No, sync when switching FROM Url
+                                // Actually, we should sync whenever data changes. 
+                                // But if we switch modes, we might want to refresh the view.
+                            }
+                            if ui.radio_value(&mut self.editing_mode, ConnectionEditMode::Fields, "Host & Port").changed() {
+                                // Logic to parse URL into fields if switching to fields?
+                                // We'll do it proactively on URL change.
+                            }
+                        });
+                        ui.add_space(10.0);
+
+                        match self.editing_mode {
+                            ConnectionEditMode::Url => {
+                                ui.label("JDBC URL:");
+                                let url_response = ui.add(
+                                    egui::TextEdit::multiline(&mut self.editing_connection.url)
+                                    .hint_text("jdbc:sqlserver://host:port;databaseName=DB")
+                                    .desired_rows(3)
+                                    .desired_width(f32::INFINITY)
+                                );
+                                
+                                if url_response.changed() {
+                                    changed = true;
+                                    // Auto-parse to update fields for "preview" or consistency
+                                    if let Ok(parsed) = crate::core::db::parse_jdbc_url(&self.editing_connection.url) {
+                                         self.editing_fields = crate::core::db::ConnectionFields {
+                                             host: parsed.host,
+                                             port: parsed.port.to_string(),
+                                             database: parsed.database.unwrap_or_default(),
+                                             encrypt: parsed.encrypt,
+                                             trust_cert: parsed.trust_cert,
+                                         };
+                                    }
+                                }
+                            },
+                            ConnectionEditMode::Fields => {
+                                egui::Grid::new("mssql_fields").num_columns(2).spacing([10.0, 10.0]).show(ui, |ui| {
+                                    ui.label("Host:");
+                                    if ui.text_edit_singleline(&mut self.editing_fields.host).changed() { changed = true; }
+                                    ui.end_row();
+                                    
+                                    ui.label("Port:");
+                                    if ui.text_edit_singleline(&mut self.editing_fields.port).changed() { changed = true; }
+                                    ui.end_row();
+                                    
+                                    ui.label("Database:");
+                                    if ui.text_edit_singleline(&mut self.editing_fields.database).changed() { changed = true; }
+                                    ui.end_row();
+                                    
+                                    ui.label("Encrypted:");
+                                    if ui.checkbox(&mut self.editing_fields.encrypt, "").changed() { changed = true; }
+                                    ui.end_row();
+                                    
+                                    ui.label("Trust Server Cert:");
+                                    if ui.checkbox(&mut self.editing_fields.trust_cert, "").changed() { changed = true; }
+                                    ui.end_row();
+                                });
+                                
+                                if changed {
+                                    // Rebuild URL from fields
+                                    self.editing_connection.url = crate::core::db::build_jdbc_url(&self.editing_fields);
+                                }
+                                
+                                ui.add_space(5.0);
+                                ui.label(egui::RichText::new("Preview URL:").weak());
+                                ui.label(egui::RichText::new(&self.editing_connection.url).monospace().small().weak());
+                            }
+                        }
+                    } else {
+                        // Fallback for other DB types
+                        egui::Grid::new("generic_fields").num_columns(2).spacing([10.0, 10.0]).show(ui, |ui| {
+                             ui.label("Connection URL:");
+                             if ui.text_edit_singleline(&mut self.editing_connection.url).changed() { changed = true; }
+                             ui.end_row();
+                        });
+                    }
+
+                    ui.separator();
+                    
+                    // Auth Section (Common-ish)
+                    ui.group(|ui| {
+                        ui.heading("Authentication");
+                        egui::Grid::new("auth_fields").num_columns(2).spacing([10.0, 10.0]).show(ui, |ui| {
+                             ui.label("User:");
+                             if ui.text_edit_singleline(&mut self.editing_connection.user).changed() { changed = true; }
+                             ui.end_row();
+    
+                             ui.label("Password:");
+                             if ui.add(egui::TextEdit::singleline(&mut self.editing_connection.password).password(true)).changed() { changed = true; }
+                             ui.end_row();
+                        });
+                    });
+                    
+                    if changed {
+                        self.test_conn_status = None;
+                    }
+
                     ui.add_space(15.0);
+                    
+                    // Test Status
+                    if self.is_testing_conn {
+                         ui.horizontal(|ui| {
+                             ui.add(egui::Spinner::new());
+                             ui.label("Testing connection...");
+                         });
+                    } else if let Some(status) = &self.test_conn_status {
+                        match status {
+                            Ok(msg) => {
+                                ui.colored_label(egui::Color32::GREEN, format!("✔ {}", msg));
+                            },
+                            Err(e) => {
+                                ui.colored_label(egui::Color32::RED, format!("❌ Connection failed: {}", e));
+                            }
+                        }
+                    }
+                    
+                    ui.add_space(10.0);
+
                     ui.horizontal(|ui| {
-                        if ui.button("Save").clicked() {
+                        if ui.add_enabled(!self.is_testing_conn, egui::Button::new("Test Connection")).clicked() {
+                            test_triggered = true;
+                        }
+                        
+                        // "Save" button now always enabled (validation happens on click), triggers test+save
+                         if ui.add_enabled(!self.is_testing_conn, egui::Button::new("Save")).clicked() {
+                            println!("Save clicked. Starting validation flow."); 
                             save_triggered = true;
                         }
+                        
                         if ui.button("Cancel").clicked() {
                             cancel_triggered = true;
                         }
                     });
                 });
             
-            if !is_open || cancel_triggered {
-                self.show_connection_modal = false;
+            // Handle async triggers
+            if test_triggered {
+                println!("Triggering test connection...");
+                self.is_testing_conn = true;
+                self.test_conn_status = None;
+                
+                let conn_config = self.editing_connection.clone();
+                let sender = self.test_sender.clone(); 
+                
+                self.tokio_runtime.spawn(async move {
+                    let client = DbClient::new();
+                    let result = client.test_connection(&conn_config).await;
+                    let _ = sender.send(result);
+                });
             } else if save_triggered {
-                if self.editing_connection.id.is_empty() {
-                    self.editing_connection.id = Uuid::new_v4().to_string(); 
-                    self.connection_manager.add(self.editing_connection.clone());
-                } else {
-                    self.connection_manager.update(self.editing_connection.clone());
+                // Comprehensive validation
+                println!("Save triggered. Validating fields...");
+                let mut validation_errors: Vec<String> = Vec::new();
+
+                // Validate connection name
+                if self.editing_connection.name.trim().is_empty() {
+                    validation_errors.push("Connection name is required".to_string());
                 }
+
+                // Validate URL
+                if self.editing_connection.url.trim().is_empty() {
+                    validation_errors.push("Connection URL cannot be empty".to_string());
+                } else if self.editing_connection.db_type == DbType::SqlServer {
+                    // Validate JDBC URL format for SQL Server
+                    if let Err(e) = crate::core::db::parse_jdbc_url(&self.editing_connection.url) {
+                        validation_errors.push(format!("Invalid JDBC URL: {}", e));
+                    }
+                }
+
+                // Validate credentials (optional but warn)
+                if self.editing_connection.user.trim().is_empty() {
+                    println!("Warning: Username is empty");
+                }
+
+                if !validation_errors.is_empty() {
+                    println!("Validation failed: {:?}", validation_errors);
+                    self.test_conn_status = Some(Err(anyhow::anyhow!("{}", validation_errors.join("\n"))));
+                } else {
+                     // Start Save Flow: Test -> Then Save
+                     println!("Validation passed. Starting save flow: Testing connection first...");
+                     println!("Connection details: name='{}', url='{}', user='{}'",
+                         self.editing_connection.name,
+                         self.editing_connection.url,
+                         self.editing_connection.user);
+                     self.is_saving = true;
+                     self.is_testing_conn = true;
+                     self.test_conn_status = None;
+
+                     let conn_config = self.editing_connection.clone();
+                     let sender = self.test_sender.clone();
+
+                     self.tokio_runtime.spawn(async move {
+                         let client = DbClient::new();
+                         let result = client.test_connection(&conn_config).await;
+                         let _ = sender.send(result);
+                     });
+                }
+            }
+
+            // Handle window close via X button or Cancel
+            if !is_open || cancel_triggered {
+                println!("Dialog closed (is_open={}, cancel={}). Resetting state.", is_open, cancel_triggered);
                 self.show_connection_modal = false;
+                self.test_conn_status = None;
+                self.is_saving = false;
+                self.is_testing_conn = false;
+            }
+            
+            // Handle async results (polled every frame)
+            while let Ok(result) = self.test_receiver.try_recv() {
+                println!("Received test result from async task");
+                self.is_testing_conn = false;
+                match result {
+                    Ok(_) => {
+                        println!("Test connection successful.");
+                        self.test_conn_status = Some(Ok("Connection successful".to_string()));
+
+                        // If we were saving, now proceed to persist
+                        if self.is_saving {
+                            println!("Proceeding to persist connection...");
+                            println!("is_new_connection flag: {}", self.is_new_connection);
+                            println!("Connection: name='{}', id='{}'",
+                                self.editing_connection.name, self.editing_connection.id);
+
+                            let save_result = if self.is_new_connection {
+                                println!("Adding new connection...");
+                                self.connection_manager.add(self.editing_connection.clone())
+                            } else {
+                                println!("Updating existing connection...");
+                                self.connection_manager.update(self.editing_connection.clone())
+                            };
+
+                            match save_result {
+                                Ok(_) => {
+                                    println!("Connection {} successfully! Total connections: {}",
+                                        if self.is_new_connection { "saved" } else { "updated" },
+                                        self.connection_manager.connections.len());
+                                    self.test_conn_status = None; // Clear status on success
+                                    self.show_connection_modal = false;
+                                    self.status = format!("Connection '{}' saved successfully",
+                                        self.editing_connection.name);
+                                },
+                                Err(e) => {
+                                    println!("Error {} connection: {}",
+                                        if self.is_new_connection { "saving" } else { "updating" }, e);
+                                    self.test_conn_status = Some(Err(anyhow::anyhow!("Failed to save: {}", e)));
+                                    // Keep dialog open on error
+                                }
+                            }
+                            self.is_saving = false; // Reset flag regardless of outcome
+                        }
+                    },
+                    Err(e) => {
+                        println!("Test connection failed: {}", e);
+                        self.test_conn_status = Some(Err(e));
+                        if self.is_saving {
+                            println!("Save aborted due to failed test.");
+                            self.is_saving = false;
+                        }
+                        // Dialog stays open on error
+                    }
+                }
             }
         }
     }
