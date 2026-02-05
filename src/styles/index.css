@@ -1,0 +1,560 @@
+/* ─── Dracula Theme ──────────────────────────────────────────────────────── */
+:root {
+  --bg: #282a36;
+  --bg-darker: #1e1f29;
+  --current-line: #44475a;
+  --foreground: #f8f8f2;
+  --comment: #6272a4;
+  --cyan: #8be9fd;
+  --green: #50fa7b;
+  --orange: #ffb86c;
+  --pink: #ff79c6;
+  --purple: #bd93f9;
+  --red: #ff5555;
+  --yellow: #f1fa8c;
+
+  --border: #44475a;
+  --sidebar-width: 240px;
+  --toolbar-height: 42px;
+  --statusbar-height: 28px;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: var(--bg);
+  color: var(--foreground);
+  font-family: "Segoe UI", "Meiryo", "Yu Gothic", "Noto Sans", sans-serif;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+/* ─── Layout ─────────────────────────────────────────────────────────────── */
+.app-layout {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  height: var(--toolbar-height);
+  background: var(--bg-darker);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.toolbar h1 {
+  font-size: 15px;
+  font-weight: 600;
+  margin-right: 8px;
+}
+
+.toolbar-separator {
+  width: 1px;
+  height: 20px;
+  background: var(--border);
+  margin: 0 4px;
+}
+
+.content-area {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.sidebar {
+  width: var(--sidebar-width);
+  min-width: 160px;
+  max-width: 400px;
+  background: var(--bg-darker);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  resize: horizontal;
+}
+
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sidebar-header h2 {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sidebar-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.main-content {
+  flex: 1;
+  overflow: auto;
+  padding: 12px 16px;
+}
+
+.statusbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  height: var(--statusbar-height);
+  background: var(--bg-darker);
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--comment);
+  flex-shrink: 0;
+}
+
+/* ─── Tab Buttons ────────────────────────────────────────────────────────── */
+.tab-btn {
+  background: none;
+  border: none;
+  color: var(--comment);
+  padding: 4px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  border-radius: 4px;
+  transition: background 0.15s, color 0.15s;
+}
+
+.tab-btn:hover {
+  background: var(--current-line);
+  color: var(--foreground);
+}
+
+.tab-btn.active {
+  background: var(--purple);
+  color: var(--bg);
+  font-weight: 600;
+}
+
+/* ─── Buttons ────────────────────────────────────────────────────────────── */
+button, .btn {
+  background: var(--current-line);
+  border: 1px solid var(--border);
+  color: var(--foreground);
+  padding: 4px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.15s;
+}
+
+button:hover, .btn:hover {
+  background: var(--comment);
+}
+
+button:disabled, .btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--purple);
+  color: var(--bg);
+  border-color: var(--purple);
+}
+
+.btn-primary:hover {
+  background: #a775e6;
+}
+
+.btn-success {
+  background: var(--green);
+  color: var(--bg);
+  border-color: var(--green);
+}
+
+.btn-danger {
+  background: var(--red);
+  color: var(--foreground);
+  border-color: var(--red);
+}
+
+.btn-pink {
+  background: var(--pink);
+  color: var(--bg);
+  border-color: var(--pink);
+}
+
+/* ─── Form Inputs ────────────────────────────────────────────────────────── */
+input[type="text"],
+input[type="password"],
+select,
+textarea {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--foreground);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: var(--purple);
+}
+
+textarea.code-editor {
+  font-family: "Cascadia Code", "Consolas", "Courier New", monospace;
+  resize: vertical;
+  tab-size: 2;
+}
+
+/* ─── Sidebar Items ──────────────────────────────────────────────────────── */
+.sidebar-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: background 0.1s;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.sidebar-item:hover {
+  background: var(--current-line);
+}
+
+.sidebar-item.selected {
+  background: var(--current-line);
+  color: var(--green);
+  font-weight: 600;
+}
+
+.sidebar-item .actions {
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+}
+
+.sidebar-item:hover .actions {
+  opacity: 1;
+}
+
+.sidebar-item .actions button {
+  padding: 2px 6px;
+  font-size: 11px;
+  background: none;
+  border: none;
+}
+
+/* ─── Result Table ───────────────────────────────────────────────────────── */
+.result-table-container {
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  max-height: calc(100vh - 380px);
+}
+
+.result-table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.result-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.result-table th {
+  background: var(--current-line);
+  color: var(--foreground);
+  font-weight: 600;
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 2px solid var(--comment);
+  white-space: nowrap;
+  position: relative;
+  user-select: none;
+}
+
+.result-table th .resizer {
+  position: absolute;
+  right: 0;
+  top: 0;
+  height: 100%;
+  width: 4px;
+  cursor: col-resize;
+  background: transparent;
+}
+
+.result-table th .resizer:hover,
+.result-table th .resizer.isResizing {
+  background: var(--purple);
+}
+
+.result-table td {
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 400px;
+}
+
+.result-table tr:nth-child(even) {
+  background: rgba(68, 71, 90, 0.3);
+}
+
+.result-table tr:hover td {
+  background: rgba(68, 71, 90, 0.6);
+}
+
+.cell-null {
+  color: #646464;
+  font-style: italic;
+}
+
+/* ─── Collapsible Sections ───────────────────────────────────────────────── */
+.collapsible-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.1s;
+}
+
+.collapsible-header:hover {
+  background: var(--current-line);
+}
+
+.collapsible-header .arrow {
+  transition: transform 0.15s;
+  font-size: 10px;
+}
+
+.collapsible-header .arrow.open {
+  transform: rotate(90deg);
+}
+
+.collapsible-body {
+  padding-left: 16px;
+}
+
+/* ─── Execution Group ────────────────────────────────────────────────────── */
+.execution-group {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.execution-group .dao-name {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--purple);
+  margin-bottom: 6px;
+}
+
+.execution-item {
+  background: var(--current-line);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px;
+  margin: 4px 0;
+}
+
+.execution-item .sql-display {
+  font-family: "Cascadia Code", "Consolas", "Courier New", monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--bg);
+  padding: 8px;
+  border-radius: 4px;
+  margin-top: 6px;
+  max-height: 300px;
+  overflow: auto;
+}
+
+.params-display {
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 12px;
+  color: var(--pink);
+  margin-top: 4px;
+}
+
+/* ─── Modal / Dialog ─────────────────────────────────────────────────────── */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.modal {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+  min-width: 500px;
+  max-width: 700px;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+.modal h2 {
+  margin-bottom: 16px;
+  font-size: 16px;
+}
+
+.form-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.form-row label {
+  min-width: 120px;
+  font-size: 13px;
+  color: var(--comment);
+}
+
+.form-row input,
+.form-row select,
+.form-row textarea {
+  flex: 1;
+}
+
+.form-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+  justify-content: flex-end;
+}
+
+/* ─── Connection Status ──────────────────────────────────────────────────── */
+.status-success {
+  color: var(--green);
+}
+
+.status-error {
+  color: var(--red);
+}
+
+/* ─── Radio / Mode Toggle ────────────────────────────────────────────────── */
+.mode-toggle {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.mode-toggle label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+/* ─── Misc ───────────────────────────────────────────────────────────────── */
+.meta-info {
+  font-size: 12px;
+  color: var(--comment);
+  margin-bottom: 8px;
+}
+
+.spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border);
+  border-top-color: var(--purple);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.flex-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.flex-1 {
+  flex: 1;
+}
+
+.gap-sm { gap: 4px; }
+.gap-md { gap: 8px; }
+.gap-lg { gap: 16px; }
+.mb-sm { margin-bottom: 4px; }
+.mb-md { margin-bottom: 8px; }
+.mb-lg { margin-bottom: 16px; }
+.mt-sm { margin-top: 4px; }
+.mt-md { margin-top: 8px; }
+.mt-lg { margin-top: 16px; }
+
+/* ─── Checkbox ───────────────────────────────────────────────────────────── */
+input[type="checkbox"] {
+  accent-color: var(--purple);
+}
+
+/* ─── Scrollbar ──────────────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--current-line);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--comment);
+}
+
+/* ─── Select / ComboBox ──────────────────────────────────────────────────── */
+select {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%23f8f8f2'%3E%3Cpath d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  padding-right: 28px;
+}
