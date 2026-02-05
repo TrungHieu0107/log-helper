@@ -1,77 +1,32 @@
-# Build directories
-build/
-out/
-cmake-build-*/
-x64/
-x86/
-Debug/
-Release/
-MinSizeRel/
-RelWithDebInfo/
-bin/
+# Rust build output
+target/
+src-tauri/target/
 
-# Compiled binaries
-*.exe
-*.dll
-*.lib
-*.a
-*.o
-*.obj
-*.pdb
-*.ilk
-*.exp
+# Node dependencies
+node_modules/
 
-# CMake generated files
-CMakeCache.txt
-CMakeFiles/
-cmake_install.cmake
-Makefile
-*.cmake
-!CMakeLists.txt
-
-# Visual Studio
-.vs/
-*.vcxproj
-*.vcxproj.filters
-*.vcxproj.user
-*.sln
-*.suo
-*.user
-*.userosscache
-*.sdf
-*.opensdf
-*.VC.db
-*.VC.VC.opendb
-ipch/
-*.aps
-
-# VS Code
+# IDE and editor files
 .vscode/
-
-# JetBrains IDEs
 .idea/
 *.iml
+.vs/
+*.swp
+*~
 
 # Windows
 Thumbs.db
-ehthumbs.db
 Desktop.ini
 $RECYCLE.BIN/
 
 # macOS
 .DS_Store
-.AppleDouble
-.LSOverride
 ._*
 
 # Logs
 *.log
-
-# Temporary files
-*.tmp
-*.temp
-*.swp
-*~
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
 # Application config (contains connection passwords)
 log_parser_config.json
@@ -79,4 +34,12 @@ log_parser_config.json
 # HTML output files
 sql_report_*.html
 
+# Build output
+dist/
+video/
+screenshots/
+
+# Claude/Gemini agent files
 .claude/
+.agent/
+.gemini/
