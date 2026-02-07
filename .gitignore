@@ -30,6 +30,7 @@ yarn-error.log*
 
 # Application config (contains connection passwords)
 log_parser_config.json
+db_connections.json
 
 # HTML output files
 sql_report_*.html
